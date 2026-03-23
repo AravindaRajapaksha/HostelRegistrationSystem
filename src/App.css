@@ -132,6 +132,14 @@ h4 {
   padding: 1.4rem;
 }
 
+.login-submit-button {
+  min-width: 180px;
+  min-height: 56px;
+  padding: 0.95rem 1.5rem;
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
 .credentials-grid,
 .rules-preview,
 .rule-grid,
@@ -869,6 +877,15 @@ h4 {
     padding: 1.2rem;
   }
 
+  .sidebar {
+    gap: 0.9rem;
+    overflow: visible;
+  }
+
+  .brand-block h2 {
+    font-size: clamp(1.9rem, 5vw, 2.4rem);
+  }
+
   .search-field,
   .action-panel,
   .form-toggle .toggle {
@@ -902,12 +919,39 @@ h4 {
     padding: 1rem;
   }
 
+  .sidebar {
+    position: sticky;
+    top: 0;
+    z-index: 12;
+    gap: 0.8rem;
+    border-bottom: 1px solid var(--border-strong);
+    backdrop-filter: blur(14px);
+  }
+
+  .brand-block {
+    gap: 0.15rem;
+    padding-bottom: 0.2rem;
+  }
+
+  .brand-block h2 {
+    font-size: clamp(1.5rem, 8vw, 2rem);
+  }
+
+  .brand-block p {
+    font-size: 0.95rem;
+  }
+
   .login-card,
   .panel-card,
   .feature-panel,
   .booking-card,
   .modal-card {
     padding: 1rem;
+  }
+
+  .login-submit-button {
+    width: 100%;
+    min-width: 0;
   }
 
   .topbar h1 {
@@ -926,6 +970,39 @@ h4 {
 
   .status-banner {
     padding: 0.85rem 0.9rem;
+  }
+
+  .nav-list,
+  .sidebar-footer {
+    display: flex;
+    gap: 0.7rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    align-items: stretch;
+    padding-bottom: 0.2rem;
+    scrollbar-width: none;
+  }
+
+  .nav-list::-webkit-scrollbar,
+  .sidebar-footer::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav-button,
+  .sidebar-footer .ghost-button,
+  .sidebar-footer .primary-button {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: max-content;
+    padding: 0.75rem 1rem;
+  }
+
+  .sidebar-footer .full-width {
+    width: auto;
+  }
+
+  .logout-confirm-card {
+    min-width: min(290px, 86vw);
   }
 
   .nav-button,

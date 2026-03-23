@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import QRCode from 'qrcode'
 import './App.css'
 import {
@@ -27,6 +27,15 @@ import {
 
 const STORAGE_KEY = 'hostel-system-demo-state-v1'
 const SESSION_KEY = 'hostel-system-demo-session-v1'
+
+function scrollPageToTop(behavior = 'smooth') {
+  window.scrollTo({
+    top: 0,
+    left: 0,
+    behavior,
+  })
+}
+
 function App() {
   const [appState, setAppState] = useState(loadState)
   const [session, setSession] = useState(null)
@@ -69,12 +78,18 @@ function App() {
     setSession({ username: user.username })
     setActiveView(nextView)
     setFeedback(`Welcome, ${user.name}. You are signed in as ${user.roleLabel}.`)
+    window.requestAnimationFrame(() => {
+      scrollPageToTop('auto')
+    })
   }
 
   function handleLogout() {
     setSession(null)
     setActiveView('home')
     setFeedback('You have been logged out of the demo.')
+    window.requestAnimationFrame(() => {
+      scrollPageToTop('auto')
+    })
   }
 
   function submitBooking(formValues) {
@@ -766,8 +781,8 @@ function LoginScreen({ feedback, users, onLogin }) {
           />
 
           <div className="button-row">
-            <button className="primary-button" type="submit">
-              Open portal
+            <button className="primary-button login-submit-button" type="submit">
+              Login
             </button>
           </div>
         </form>
@@ -809,8 +824,6 @@ function PortalShell({
 }) {
   const [isLogoutConfirmOpen, setIsLogoutConfirmOpen] = useState(false)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
-  const contentRef = useRef(null)
-  const hasNavigatedRef = useRef(false)
 
   function handleConfirmLogout() {
     setIsLoggingOut(true)
@@ -821,15 +834,7 @@ function PortalShell({
   }
 
   useEffect(() => {
-    if (!hasNavigatedRef.current) {
-      hasNavigatedRef.current = true
-      return
-    }
-
-    contentRef.current?.scrollIntoView({
-      behavior: 'smooth',
-      block: 'start',
-    })
+    scrollPageToTop('smooth')
   }, [activeView])
 
   return (
@@ -911,7 +916,7 @@ function PortalShell({
         </header>
 
         <div className="status-banner portal-banner">{feedback}</div>
-        <section className="page-body page-transition" key={activeView} ref={contentRef}>
+        <section className="page-body page-transition" key={activeView}>
           {children}
         </section>
       </div>

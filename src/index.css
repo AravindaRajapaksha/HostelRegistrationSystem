@@ -2,12 +2,12 @@
   font-family: 'Trebuchet MS', 'Gill Sans', sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color: #203435;
+  color: #122b4d;
   background:
-    radial-gradient(circle at top left, rgba(242, 184, 74, 0.34), transparent 30%),
-    radial-gradient(circle at 85% 18%, rgba(20, 129, 122, 0.18), transparent 24%),
-    radial-gradient(circle at bottom right, rgba(13, 148, 136, 0.2), transparent 28%),
-    linear-gradient(180deg, #f5efe3, #efe6d8);
+    radial-gradient(circle at top left, rgba(148, 190, 244, 0.28), transparent 30%),
+    radial-gradient(circle at 85% 18%, rgba(94, 157, 230, 0.16), transparent 24%),
+    radial-gradient(circle at bottom right, rgba(46, 99, 174, 0.18), transparent 28%),
+    linear-gradient(180deg, #f7fbff, #e8f1ff);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;

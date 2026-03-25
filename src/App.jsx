@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react'
 import QRCode from 'qrcode'
 import './App.css'
 import {
+  ACADEMIC_ACTIVITY_OPTIONS,
   BEDS_PER_ROOM,
   CONTACTS,
   DAILY_FEE,
   DEPARTMENT_OPTIONS,
   RULE_GROUPS,
+  SUBJECT_OPTIONS,
   TOTAL_ROOMS,
   WARDEN_ONLY_WORKFLOWS,
   YEAR_STAY_LIMIT,
@@ -97,6 +99,8 @@ function App() {
       return
     }
 
+    const selectedSubjects = normalizeSubjectValues(formValues.courseCode)
+
     if (!formValues.checkIn || !formValues.checkOut) {
       setFeedback('Choose both the check-in date and check-out date before creating a booking.')
       return
@@ -107,21 +111,27 @@ function App() {
       return
     }
 
-    if (formValues.workflow === 'regular') {
-      if (!formValues.department) {
-        setFeedback('Select the department for the academic TRF booking request.')
-        return
-      }
+    if (!formValues.department) {
+      setFeedback(
+        formValues.workflow === 'regular'
+          ? 'Select the department for the academic TRF booking request.'
+          : 'Select the department before submitting the special reason TRF booking request.',
+      )
+      return
+    }
 
-      if (!formValues.courseCode.trim()) {
-        setFeedback('Enter the course code before submitting the academic TRF booking request.')
-        return
-      }
+    if (!selectedSubjects.length) {
+      setFeedback(
+        formValues.workflow === 'regular'
+          ? 'Select the subject code before submitting the academic TRF booking request.'
+          : 'Select the subject code before submitting the special reason TRF booking request.',
+      )
+      return
+    }
 
-      if (!formValues.academicActivity.trim()) {
-        setFeedback('Enter the academic activity before submitting the academic TRF booking request.')
-        return
-      }
+    if (formValues.workflow === 'regular' && !formValues.academicActivity.trim()) {
+      setFeedback('Select the academic activity before submitting the academic TRF booking request.')
+      return
     }
 
     if (formValues.workflow === 'special' && !formValues.specialReason.trim()) {
@@ -185,8 +195,8 @@ function App() {
       wardenStatus: 'pending',
       wardenReviewedBy: '',
       wardenReviewedAt: '',
-      department: formValues.workflow === 'regular' ? formValues.department : '',
-      courseCode: formValues.workflow === 'regular' ? formValues.courseCode : '',
+      department: formValues.department,
+      courseCode: selectedSubjects.join(', '),
       academicActivity: formValues.workflow === 'regular' ? formValues.academicActivity : '',
       specialReason: formValues.workflow === 'special' ? formValues.specialReason : '',
       homePhone: formValues.homePhone,
@@ -194,6 +204,8 @@ function App() {
       paymentTotal: calculatePaymentTotal(requestedDays),
       paymentStatus: 'unpaid',
       paymentPaidAt: '',
+      academicDecisionReason: '',
+      wardenDecisionReason: '',
       qrValue: createQrValue(bookingId, currentUser.username),
       cancelledAt: '',
       studentClearedAt: '',
@@ -204,7 +216,7 @@ function App() {
     setFeedback(`Booking ${booking.id} was created and routed for approval.`)
   }
 
-  function decideAcademic(bookingId, decision) {
+  function decideAcademic(bookingId, decision, reason = '') {
     if (!currentUser || currentUser.roleGroup !== 'academic') {
       return
     }
@@ -215,6 +227,11 @@ function App() {
 
     if (!targetBooking || !canAcademicUserReviewBooking(currentUser, targetBooking)) {
       setFeedback('This academic request is not assigned to your department review team.')
+      return
+    }
+
+    if (decision === 'rejected' && !reason.trim()) {
+      setFeedback('Add the not-approved reason before rejecting the booking request.')
       return
     }
 
@@ -230,6 +247,7 @@ function App() {
           academicStatus: decision,
           academicReviewedBy: currentUser.username,
           academicReviewedAt: toIsoDate(new Date()),
+          academicDecisionReason: decision === 'rejected' ? reason.trim() : '',
         }
       }),
     }))
@@ -237,12 +255,17 @@ function App() {
     setFeedback(
       decision === 'approved'
         ? `Academic approval recorded for ${bookingId}.`
-        : `Academic rejection recorded for ${bookingId}.`,
+        : `Academic rejection recorded for ${bookingId} with the not-approved reason.`,
     )
   }
 
-  function decideWarden(bookingId, decision) {
+  function decideWarden(bookingId, decision, reason = '') {
     if (!currentUser || currentUser.roleGroup !== 'warden') {
+      return
+    }
+
+    if (decision === 'rejected' && !reason.trim()) {
+      setFeedback('Add the not-approved reason before rejecting the booking request.')
       return
     }
 
@@ -264,6 +287,7 @@ function App() {
               wardenStatus: decision,
               wardenReviewedBy: currentUser.username,
               wardenReviewedAt: toIsoDate(new Date()),
+              wardenDecisionReason: decision === 'rejected' ? reason.trim() : '',
             }
           }
 
@@ -280,6 +304,8 @@ function App() {
               wardenStatus: 'rejected',
               wardenReviewedBy: currentUser.username,
               wardenReviewedAt: toIsoDate(new Date()),
+              wardenDecisionReason:
+                'Automatically not approved because another overlapping request for this room and bed was approved first.',
             }
           }
 
@@ -291,7 +317,7 @@ function App() {
     setFeedback(
       decision === 'approved'
         ? `Warden approval recorded for ${bookingId}. Availability was updated for overlapping requests.`
-        : `Warden rejection recorded for ${bookingId}.`,
+        : `Warden rejection recorded for ${bookingId} with the not-approved reason.`,
     )
   }
 
@@ -640,7 +666,7 @@ function renderView({
     if (activeView === 'rejected') {
       return (
         <DecisionListView
-          bookings={relevant.filter((booking) => booking.academicStatus === 'rejected')}
+          bookings={relevant.filter((booking) => getCurrentStatus(booking) === 'not approved')}
           onClear={onClearAcademicBooking}
           currentUser={currentUser}
           emptyCopy="No not-approved requests are available yet."
@@ -702,6 +728,19 @@ function renderView({
     )
   }
 
+  if (activeView === 'rejected') {
+    return (
+      <DecisionListView
+        bookings={relevant.filter((booking) => getCurrentStatus(booking) === 'not approved')}
+        onClear={onClearWardenBooking}
+        currentUser={currentUser}
+        emptyCopy="No not-approved requests are available yet."
+        title="Not-Approved Requests"
+        users={appState.users}
+      />
+    )
+  }
+
   if (activeView === 'confirmations') {
     return (
       <ScanConfirmationsView
@@ -735,10 +774,10 @@ function renderView({
   return <HomeView currentUser={currentUser} users={appState.users} />
 }
 
-function LoginScreen({ feedback, users, onLogin }) {
+function LoginScreen({ users, onLogin }) {
   const [credentials, setCredentials] = useState({
-    username: 'st2024001',
-    password: '2024/ICT/001',
+    username: 's23000427',
+    password: 's23000427',
   })
 
   const groupedUsers = {
@@ -752,12 +791,8 @@ function LoginScreen({ feedback, users, onLogin }) {
       <section className="login-panel login-panel-full">
         <div className="login-intro">
           <div className="eyebrow">Hostel Booking Login</div>
-          <h1>Sign in with a demo account</h1>
-          <p className="hero-copy">
-            Choose a student, warden, or academic staff account and open the relevant portal.
-          </p>
+          <h1>Temporary Residential Facility (TRF)</h1>
         </div>
-        <div className="status-banner">{feedback}</div>
         <form
           className="login-card"
           onSubmit={(event) => {
@@ -765,7 +800,7 @@ function LoginScreen({ feedback, users, onLogin }) {
             onLogin(credentials)
           }}
         >
-          <h2>Sign in</h2>
+          <h2>Login</h2>
           <Field
             label="Username"
             name="username"
@@ -824,6 +859,7 @@ function PortalShell({
 }) {
   const [isLogoutConfirmOpen, setIsLogoutConfirmOpen] = useState(false)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
 
   function handleConfirmLogout() {
     setIsLoggingOut(true)
@@ -839,20 +875,38 @@ function PortalShell({
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand-block">
-          <div className="eyebrow">TRF Booking Portal</div>
-          <h2>{currentUser.roleLabel}</h2>
-          <p>{currentUser.name}</p>
+      <aside className={`sidebar${isMobileMenuOpen ? ' mobile-open' : ''}`}>
+        <div className="sidebar-header">
+          <button
+            aria-controls="mobile-primary-navigation"
+            aria-expanded={isMobileMenuOpen}
+            aria-label={isMobileMenuOpen ? 'Close navigation' : 'Open navigation'}
+            className="ghost-button mobile-menu-toggle"
+            onClick={() => setIsMobileMenuOpen((previous) => !previous)}
+            type="button"
+          >
+            <span className="sr-only">{isMobileMenuOpen ? 'Close navigation' : 'Open navigation'}</span>
+            <span className={`mobile-menu-icon${isMobileMenuOpen ? ' open' : ''}`} aria-hidden="true">
+              <span className="mobile-menu-icon-line" />
+              <span className="mobile-menu-icon-line" />
+              <span className="mobile-menu-icon-line" />
+            </span>
+          </button>
         </div>
 
-        <nav className="nav-list" aria-label="Primary navigation">
+        <div className="sidebar-user-summary">
+          <div className="eyebrow">Signed in as</div>
+          <strong className="sidebar-user-role">{currentUser.roleLabel}</strong>
+        </div>
+
+        <nav className="nav-list" aria-label="Primary navigation" id="mobile-primary-navigation">
           {navItems.map((item) => (
             <button
               className={item.id === activeView ? 'nav-button active' : 'nav-button'}
               key={item.id}
               onClick={() => {
                 setIsLogoutConfirmOpen(false)
+                setIsMobileMenuOpen(false)
                 onNavigate(item.id)
               }}
               type="button"
@@ -894,7 +948,10 @@ function PortalShell({
           ) : (
             <button
               className="ghost-button full-width"
-              onClick={() => setIsLogoutConfirmOpen(true)}
+              onClick={() => {
+                setIsLogoutConfirmOpen(true)
+                setIsMobileMenuOpen(false)
+              }}
               type="button"
             >
               Logout
@@ -906,12 +963,12 @@ function PortalShell({
       <div className="content-column">
         <header className="topbar">
           <div>
-            <div className="eyebrow">Live status</div>
             <h1>{getPageHeading(currentUser.roleGroup, activeView)}</h1>
           </div>
           <div className="topbar-user">
-            <span>{currentUser.username}</span>
-            <strong>{currentUser.email}</strong>
+            <span className="topbar-user-name">{currentUser.name}</span>
+            <span className="topbar-user-username">{currentUser.username}</span>
+            <strong className="topbar-user-email">{currentUser.email}</strong>
           </div>
         </header>
 
@@ -1078,7 +1135,8 @@ function StudentDashboard({ bookings, student }) {
             items={[
               ['Name', student.name],
               ['Gender', student.gender],
-              ['Registration number', student.registrationNumber],
+              ['Student number (S number)', student.studentNumber ?? student.username],
+              ['Registration number', student.registrationNumber ?? 'N/A'],
               ['Faculty', student.faculty],
               ['Degree program', student.degreeProgram],
               ['Email', student.email],
@@ -1112,6 +1170,8 @@ function StudentBookingForm({ bookings, student, onSubmit }) {
   const resolvedBedNumber = bedOptions.some((option) => option.value === form.bedNumber)
     ? form.bedNumber
     : bedOptions[0]?.value ?? ''
+  const selectedSubject = normalizeSubjectValues(form.courseCode)[0] ?? ''
+
   return (
     <div className="stacked-layout">
       <section className="feature-panel">
@@ -1126,7 +1186,6 @@ function StudentBookingForm({ bookings, student, onSubmit }) {
         <div className="metric-strip">
           <MetricCard label="Remaining days" value={`${remainingDays}`} />
           <MetricCard label="Requested days" value={`${requestedDays || 0}`} />
-          <MetricCard label="Payment" value={formatCurrency(calculatePaymentTotal(requestedDays))} />
         </div>
       </section>
 
@@ -1136,6 +1195,7 @@ function StudentBookingForm({ bookings, student, onSubmit }) {
           event.preventDefault()
           onSubmit({
             ...form,
+            courseCode: normalizeSubjectValues(form.courseCode),
             bedNumber: resolvedBedNumber,
             roomNumber: resolvedRoomNumber,
           })
@@ -1220,23 +1280,71 @@ function StudentBookingForm({ bookings, student, onSubmit }) {
                 })),
               ]}
             />
-            <Field
-              label="Course code"
+            <SelectField
+              label="Subject course code"
               name="courseCode"
-              value={form.courseCode}
-              onChange={(value) => setForm((previous) => ({ ...previous, courseCode: value }))}
+              value={selectedSubject}
+              onChange={(value) =>
+                setForm((previous) => ({
+                  ...previous,
+                  courseCode: value,
+                }))
+              }
+              options={[
+                { value: '', label: 'Select subject course code' },
+                ...SUBJECT_OPTIONS.map((subject) => ({
+                  value: subject,
+                  label: subject,
+                })),
+              ]}
             />
-            <Field
+            <SelectField
               label="Academic activity"
               name="academicActivity"
               value={form.academicActivity}
-              onChange={(value) =>
-                setForm((previous) => ({ ...previous, academicActivity: value }))
-              }
+              onChange={(value) => setForm((previous) => ({ ...previous, academicActivity: value }))}
+              options={[
+                { value: '', label: 'Select academic activity' },
+                ...ACADEMIC_ACTIVITY_OPTIONS.map((activity) => ({
+                  value: activity,
+                  label: activity,
+                })),
+              ]}
             />
           </div>
         ) : (
-          <div className="form-grid single-row">
+          <div className="form-grid">
+            <SelectField
+              label="Department"
+              name="department"
+              value={form.department}
+              onChange={(value) => setForm((previous) => ({ ...previous, department: value }))}
+              options={[
+                { value: '', label: 'Select department' },
+                ...DEPARTMENT_OPTIONS.map((department) => ({
+                  value: department,
+                  label: department,
+                })),
+              ]}
+            />
+            <SelectField
+              label="Subject course code"
+              name="courseCode"
+              value={selectedSubject}
+              onChange={(value) =>
+                setForm((previous) => ({
+                  ...previous,
+                  courseCode: value,
+                }))
+              }
+              options={[
+                { value: '', label: 'Select subject course code' },
+                ...SUBJECT_OPTIONS.map((subject) => ({
+                  value: subject,
+                  label: subject,
+                })),
+              ]}
+            />
             <TextAreaField
               label="Special reason"
               name="specialReason"
@@ -1262,6 +1370,7 @@ function StudentBookingsView({ bookings, onCancel, onClear, onPay, users }) {
     return (
       !booking.studentClearedAt &&
       (status === 'approved' ||
+        status === 'not approved' ||
         status === 'pending academic' ||
         status === 'pending warden' ||
         status === 'cancelled')
@@ -1283,7 +1392,7 @@ function StudentBookingsView({ bookings, onCancel, onClear, onPay, users }) {
             const status = getCurrentStatus(booking)
             const paid = isPaymentComplete(booking)
             const canCancel = !booking.cancelledAt && !paid && status === 'pending academic'
-            const canClear = (status === 'approved' && paid) || status === 'cancelled'
+            const canClear = (status === 'approved' && paid) || status === 'cancelled' || status === 'not approved'
 
             let action = null
 
@@ -1352,7 +1461,7 @@ function AcademicDashboardView({ bookings, currentUser, onDecision, users }) {
       bookings={filtered}
       currentUser={currentUser}
       onApprove={(id) => onDecision(id, 'approved')}
-      onReject={(id) => onDecision(id, 'rejected')}
+      onReject={(id, reason) => onDecision(id, 'rejected', reason)}
       query={query}
       searchLabel="Search pending requests"
       setQuery={setQuery}
@@ -1371,7 +1480,7 @@ function WardenDashboardView({ bookings, currentUser, onDecision, title = 'Warde
       bookings={filtered}
       currentUser={currentUser}
       onApprove={(id) => onDecision(id, 'approved')}
-      onReject={(id) => onDecision(id, 'rejected')}
+      onReject={(id, reason) => onDecision(id, 'rejected', reason)}
       query={query}
       searchLabel="Search student details"
       setQuery={setQuery}
@@ -1392,6 +1501,30 @@ function ApprovalQueue({
   title,
   users,
 }) {
+  const [rejectTarget, setRejectTarget] = useState(null)
+  const [rejectReason, setRejectReason] = useState('')
+
+  function openRejectDialog(booking) {
+    setRejectTarget(booking)
+    setRejectReason('')
+  }
+
+  function closeRejectDialog() {
+    setRejectTarget(null)
+    setRejectReason('')
+  }
+
+  function submitRejectReason() {
+    const reason = rejectReason.trim()
+
+    if (!rejectTarget || !reason) {
+      return
+    }
+
+    onReject(rejectTarget.id, reason)
+    closeRejectDialog()
+  }
+
   return (
     <section className="panel-card">
       <div className="section-heading">
@@ -1419,7 +1552,7 @@ function ApprovalQueue({
                   <button className="primary-button" onClick={() => onApprove(booking.id)} type="button">
                     Approve
                   </button>
-                  <button className="ghost-button" onClick={() => onReject(booking.id)} type="button">
+                  <button className="ghost-button" onClick={() => openRejectDialog(booking)} type="button">
                     Not approve
                   </button>
                 </div>
@@ -1434,6 +1567,51 @@ function ApprovalQueue({
       ) : (
         <EmptyState copy="No matching notifications are waiting right now." />
       )}
+
+      {rejectTarget ? (
+        <div className="modal-backdrop" onClick={closeRejectDialog} role="presentation">
+          <div
+            aria-labelledby={`reject-modal-${rejectTarget.id}`}
+            aria-modal="true"
+            className="modal-card rejection-modal-card"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <div className="modal-header">
+              <div>
+                <div className="eyebrow">Not-Approve Reason</div>
+                <h3 id={`reject-modal-${rejectTarget.id}`}>Add the reason for {rejectTarget.id}</h3>
+              </div>
+              <button className="ghost-button" onClick={closeRejectDialog} type="button">
+                Close
+              </button>
+            </div>
+            <label className="field full-span">
+              <span>Reason for not approving this request</span>
+              <textarea
+                autoFocus
+                onChange={(event) => setRejectReason(event.target.value)}
+                placeholder="Type the reason that should be visible to the student and staff reviewers."
+                rows="5"
+                value={rejectReason}
+              />
+            </label>
+            <div className="button-row">
+              <button
+                className="primary-button"
+                disabled={!rejectReason.trim()}
+                onClick={submitRejectReason}
+                type="button"
+              >
+                Save reason and not approve
+              </button>
+              <button className="ghost-button" onClick={closeRejectDialog} type="button">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   )
 }
@@ -1504,8 +1682,12 @@ function BookingCard({ action = null, booking, collapsible = false, showQr = fal
   const paymentStatusLabel = booking.paymentStatus ?? 'unpaid'
   const canShowQr = showQr && isPaymentComplete(booking)
   const status = getCurrentStatus(booking)
+  const isWardenOnlyBooking = WARDEN_ONLY_WORKFLOWS.includes(booking.workflow)
+  const rejectionReason = getRejectionReason(booking)
   const summaryLabel =
-    status === 'approved' && !isPaymentComplete(booking)
+    status === 'not approved'
+      ? 'Request not approved'
+      : status === 'approved' && !isPaymentComplete(booking)
       ? `Payment ${formatCurrency(booking.paymentTotal)} pending`
       : status === 'approved' && isPaymentComplete(booking)
         ? 'Paid and QR ready'
@@ -1514,6 +1696,10 @@ function BookingCard({ action = null, booking, collapsible = false, showQr = fal
     booking.workflow === 'special'
       ? 'Special reason booking'
       : 'Academic TRF booking'
+  const bookingSummaryDetails =
+    booking.workflow === 'special' && booking.specialReason
+      ? `${formatDate(booking.checkIn)} to ${formatDate(booking.checkOut)} | Room ${booking.roomNumber}, Bed ${booking.bedNumber} | ${booking.specialReason}`
+      : `${formatDate(booking.checkIn)} to ${formatDate(booking.checkOut)} | Room ${booking.roomNumber}, Bed ${booking.bedNumber}`
 
   return (
     <article className="booking-card">
@@ -1528,10 +1714,7 @@ function BookingCard({ action = null, booking, collapsible = false, showQr = fal
             <div>
               <div className="booking-id">{booking.id}</div>
               <h3>{student?.name ?? booking.studentUsername}</h3>
-              <p>
-                {formatDate(booking.checkIn)} to {formatDate(booking.checkOut)} | Room {booking.roomNumber},
-                Bed {booking.bedNumber}
-              </p>
+              <p>{bookingSummaryDetails}</p>
             </div>
             <div className="booking-summary-meta">
               <span>{summaryLabel}</span>
@@ -1567,7 +1750,7 @@ function BookingCard({ action = null, booking, collapsible = false, showQr = fal
                 ['Requested days', `${booking.requestedDays}`],
                 ['Payment', formatCurrency(booking.paymentTotal)],
                 ['Payment status', paymentStatusLabel],
-                ['Created at', formatDate(booking.createdAt)],
+                ['Booking date', formatDate(booking.checkIn)],
               ]}
             />
 
@@ -1575,10 +1758,10 @@ function BookingCard({ action = null, booking, collapsible = false, showQr = fal
               items={[
                 ['Room number', `${booking.roomNumber}`],
                 ['Bed number', `${booking.bedNumber}`],
-                ['Department', booking.department || 'N/A'],
-                ['Course code', booking.courseCode || 'N/A'],
-                ['Academic activity', booking.academicActivity || 'N/A'],
-                ['Special reason', booking.specialReason || 'N/A'],
+                ['Department', booking.department || 'No'],
+                ['Subject course code', booking.courseCode || 'No'],
+                ['Academic activity', booking.academicActivity || 'No'],
+                ['Special reason', booking.specialReason || 'No'],
               ]}
             />
 
@@ -1588,13 +1771,11 @@ function BookingCard({ action = null, booking, collapsible = false, showQr = fal
                 ['Mobile contact', booking.mobilePhone || student?.mobilePhone || 'N/A'],
                 [
                   'Academic approver team',
-                  WARDEN_ONLY_WORKFLOWS.includes(booking.workflow)
-                    ? 'Not required'
-                    : formatApproverList(academicApproverUsers),
+                  isWardenOnlyBooking ? 'Not required' : formatApproverList(academicApproverUsers),
                 ],
                 [
                   'Academic staff review',
-                  WARDEN_ONLY_WORKFLOWS.includes(booking.workflow)
+                  isWardenOnlyBooking
                     ? 'Not required'
                     : academicReviewer
                       ? `${academicReviewer.roleLabel} - ${academicReviewer.name}`
@@ -1619,6 +1800,7 @@ function BookingCard({ action = null, booking, collapsible = false, showQr = fal
                   'Warden review date',
                   booking.wardenReviewedAt ? formatDate(booking.wardenReviewedAt) : 'Pending',
                 ],
+                ...(rejectionReason ? [['Not-approved reason', rejectionReason]] : []),
                 ['Payment completed on', booking.paymentPaidAt ? formatDate(booking.paymentPaidAt) : 'Pending'],
                 [
                   'Staff details',
@@ -1659,28 +1841,18 @@ function BookingCard({ action = null, booking, collapsible = false, showQr = fal
                     Close
                   </button>
                 </div>
-                <div className="modal-grid">
-                  <DetailGrid
-                    items={[
-                      [
-                        'Academic approver details',
-                        WARDEN_ONLY_WORKFLOWS.includes(booking.workflow)
-                          ? 'Not required'
-                          : formatApproverDetails(academicApproverUsers),
-                      ],
-                      [
-                        'Academic approver contacts',
-                        WARDEN_ONLY_WORKFLOWS.includes(booking.workflow)
-                          ? 'Not required'
-                          : formatApproverContacts(academicApproverUsers),
-                      ],
-                    ]}
-                  />
-                  <DetailGrid
-                    items={[
-                      ['Warden approver details', formatApproverDetails(wardenApproverUsers)],
-                      ['Warden approver contacts', formatApproverContacts(wardenApproverUsers)],
-                    ]}
+                <div className={isWardenOnlyBooking ? 'modal-grid single-column' : 'modal-grid'}>
+                  {isWardenOnlyBooking ? null : (
+                    <StaffContactGroup
+                      emptyCopy="No academic approvers assigned."
+                      people={academicApproverUsers}
+                      title="Academic approver details"
+                    />
+                  )}
+                  <StaffContactGroup
+                    emptyCopy="No warden approvers assigned."
+                    people={wardenApproverUsers}
+                    title="Warden approver details"
                   />
                 </div>
               </div>
@@ -1939,6 +2111,48 @@ function ContactCard({ email, label, name, phone }) {
   )
 }
 
+function StaffContactGroup({ emptyCopy, people, title }) {
+  return (
+    <section className="staff-contact-group">
+      <h4>{title}</h4>
+      {people.length ? (
+        <div className="staff-contact-list">
+          {people.map((person) => (
+            <StaffContactItem key={person.username} person={person} />
+          ))}
+        </div>
+      ) : (
+        <p className="staff-contact-empty">{emptyCopy}</p>
+      )}
+    </section>
+  )
+}
+
+function StaffContactItem({ person }) {
+  const roleLine = getStaffRoleLine(person)
+  const emailLine = person.email ?? 'N/A'
+  const phoneLine = formatPhoneWithCountryCode(person.mobilePhone)
+
+  return (
+    <article className="staff-contact-item">
+      <strong>{person.name}</strong>
+      <span>{`(${roleLine})`}</span>
+      <span>{`(${emailLine})`}</span>
+      <span>{`(${phoneLine})`}</span>
+    </article>
+  )
+}
+
+function DetailValueList({ values }) {
+  return (
+    <div className="detail-value-list">
+      {values.map((value) => (
+        <span key={value}>{value}</span>
+      ))}
+    </div>
+  )
+}
+
 function DetailGrid({ items }) {
   return (
     <dl className="detail-grid">
@@ -2005,8 +2219,8 @@ function QrPreview({ bookingId = 'booking', value }) {
       margin: 1,
       width: 220,
       color: {
-        dark: '#0f3d3e',
-        light: '#f6f1e8',
+        dark: '#173c72',
+        light: '#f7fbff',
       },
     }).then((result) => {
       if (mounted) {
@@ -2057,6 +2271,7 @@ function getNavItems(roleGroup) {
     { id: 'confirmations', label: 'QR Confirmations' },
     { id: 'special', label: 'Special Notifications' },
     { id: 'details', label: 'TRF Student Details' },
+    { id: 'rejected', label: 'Not-Approved Requests' },
     { id: 'emergency', label: 'Emergency Permission' },
   ]
 }
@@ -2128,21 +2343,7 @@ function getWardenApproverUsers(users, booking) {
 
 function formatApproverList(people) {
   return people.length
-    ? people.map((person) => `${person.roleLabel} - ${person.name}`).join(', ')
-    : 'N/A'
-}
-
-function formatApproverDetails(people) {
-  return people.length
-    ? people.map((person) => `${person.name} (${person.username})`).join(', ')
-    : 'N/A'
-}
-
-function formatApproverContacts(people) {
-  return people.length
-    ? people
-        .map((person) => `${person.name}: ${person.mobilePhone ?? 'N/A'}${person.email ? `, ${person.email}` : ''}`)
-        .join(', ')
+    ? <DetailValueList values={people.map((person) => `${person.roleLabel} - ${person.name}`)} />
     : 'N/A'
 }
 
@@ -2178,6 +2379,56 @@ function getVisibleRoomNumbersForWarden(user) {
   return getRoomNumbersForGender('')
 }
 
+function getStaffRoleLine(person) {
+  if (!person) {
+    return 'Staff member'
+  }
+
+  if (person.roleGroup === 'academic') {
+    if (person.roleLabel === 'Head of Department (HOD)' && person.department) {
+      return `HOD in ${person.department} department`
+    }
+
+    if (person.roleLabel === 'Academic coordinator' && person.department) {
+      return `Academic coordinator in ${person.department} department`
+    }
+
+    if (person.roleLabel === 'Student counselor') {
+      return 'Student counselor'
+    }
+  }
+
+  if (person.roleGroup === 'warden') {
+    if (person.roleLabel === 'Warden') {
+      return 'Warden'
+    }
+
+    if (person.roleLabel) {
+      return person.roleLabel
+    }
+  }
+
+  return person.roleLabel ?? 'Staff member'
+}
+
+function formatPhoneWithCountryCode(phone) {
+  const digits = String(phone ?? '').replace(/\D/g, '')
+
+  if (!digits) {
+    return 'N/A'
+  }
+
+  if (digits.startsWith('94') && digits.length >= 11) {
+    return `+${digits.slice(0, 2)} ${digits.slice(2, 4)} ${digits.slice(4, 7)} ${digits.slice(7, 11)}`
+  }
+
+  if (digits.startsWith('0') && digits.length === 10) {
+    return `+94 ${digits.slice(1, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`
+  }
+
+  return phone
+}
+
 function getPageHeading(roleGroup, activeView) {
   const map = {
     student: {
@@ -2198,6 +2449,7 @@ function getPageHeading(roleGroup, activeView) {
       confirmations: 'QR Confirmations',
       special: 'Special Reason Notifications',
       details: 'TRF Student Details',
+      rejected: 'Not-Approved Requests',
       emergency: 'Emergency Permission',
     },
   }
@@ -2239,6 +2491,17 @@ function createInitialBookingForm(student) {
   }
 }
 
+function normalizeSubjectValues(subjectValues) {
+  if (Array.isArray(subjectValues)) {
+    return subjectValues.map((value) => value.trim()).filter(Boolean)
+  }
+
+  return String(subjectValues ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+}
+
 function uniqueRoomOptions(availableBeds) {
   const roomNumbers = [...new Set(availableBeds.map((bed) => bed.roomNumber))]
   return roomNumbers.map((roomNumber) => ({
@@ -2265,6 +2528,8 @@ function filterBookings(bookings, users, query) {
       booking.courseCode,
       booking.academicActivity,
       booking.specialReason,
+      booking.academicDecisionReason,
+      booking.wardenDecisionReason,
       `room ${booking.roomNumber}`,
       `bed ${booking.bedNumber}`,
     ]
@@ -2399,6 +2664,18 @@ function createBookingId() {
   return `BK-${crypto.randomUUID().slice(0, 6).toUpperCase()}`
 }
 
+function getRejectionReason(booking) {
+  if (booking.academicStatus === 'rejected') {
+    return booking.academicDecisionReason ?? ''
+  }
+
+  if (booking.wardenStatus === 'rejected') {
+    return booking.wardenDecisionReason ?? ''
+  }
+
+  return ''
+}
+
 function loadState() {
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY)
@@ -2411,6 +2688,8 @@ function loadState() {
     const resolvedUsers = defaults.users
     const bookings = (parsed.bookings ?? defaults.bookings).map((booking) => ({
       ...booking,
+      requestedDays:
+        booking.requestedDays ?? calculateRequestedDays(booking.checkIn, booking.checkOut),
       roomNumber: normalizeRoomNumberByStudentGender(
         booking.roomNumber,
         resolvedUsers.find((user) => user.username === booking.studentUsername)?.gender,
@@ -2418,8 +2697,13 @@ function loadState() {
       department: normalizeDepartment(booking.department),
       academicApproverUsername: normalizeAcademicUsername(booking.academicApproverUsername, booking.department),
       academicReviewedBy: normalizeAcademicUsername(booking.academicReviewedBy, booking.department),
+      paymentTotal: calculatePaymentTotal(
+        booking.requestedDays ?? calculateRequestedDays(booking.checkIn, booking.checkOut),
+      ),
       paymentStatus: booking.paymentStatus ?? 'unpaid',
       paymentPaidAt: booking.paymentPaidAt ?? '',
+      academicDecisionReason: booking.academicDecisionReason ?? '',
+      wardenDecisionReason: booking.wardenDecisionReason ?? '',
       studentClearedAt: booking.studentClearedAt ?? '',
       academicClearedBy: booking.academicClearedBy ?? [],
       wardenClearedBy: booking.wardenClearedBy ?? [],

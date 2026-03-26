@@ -502,8 +502,12 @@ h4 {
 }
 
 .metric-card strong {
-  font-family: var(--heading-font);
-  font-size: 1.35rem;
+  font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  font-size: clamp(1.35rem, 1.1rem + 0.7vw, 1.8rem);
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  font-variant-numeric: lining-nums tabular-nums;
 }
 
 .rule-grid {

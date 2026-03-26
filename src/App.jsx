@@ -25,6 +25,15 @@ import {
   shouldCountAgainstDays,
   toIsoDate,
 } from './data'
+import {
+  addBookingClearance,
+  addBookingReviewLogs,
+  addScanLogs,
+  loadSupabaseAppState,
+  saveBooking,
+  saveBookings,
+  usesSupabaseBackend,
+} from './lib/appStateStore'
 
 const STORAGE_KEY = 'hostel-system-demo-state-v1'
 const SESSION_KEY = 'hostel-system-demo-session-v1'
@@ -39,6 +48,7 @@ function scrollPageToTop(behavior = 'smooth') {
 }
 
 function App() {
+  const usingSupabase = usesSupabaseBackend()
   const [appState, setAppState] = useState(loadState)
   const [session, setSession] = useState(null)
   const [activeView, setActiveView] = useState('home')
@@ -51,6 +61,43 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(appState))
   }, [appState])
+
+  useEffect(() => {
+    if (!usingSupabase) {
+      return
+    }
+
+    let isCancelled = false
+
+    async function hydrateFromSupabase() {
+      try {
+        const remoteState = await loadSupabaseAppState({
+          iotLogUrl: appState.iotLogUrl ?? '',
+        })
+
+        if (isCancelled) {
+          return
+        }
+
+        setAppState(remoteState)
+        setFeedback('Live Supabase data loaded. Seeded portal accounts are ready to use.')
+      } catch (error) {
+        if (isCancelled) {
+          return
+        }
+
+        setFeedback(
+          `${error.message} The app is still available with the current local data while we fix the connection.`,
+        )
+      }
+    }
+
+    hydrateFromSupabase()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [appState.iotLogUrl, usingSupabase])
 
   useEffect(() => {
     if (session && currentUser) {
@@ -94,7 +141,7 @@ function App() {
     })
   }
 
-  function submitBooking(formValues) {
+  async function submitBooking(formValues) {
     if (!currentUser || currentUser.roleGroup !== 'student') {
       return
     }
@@ -211,12 +258,21 @@ function App() {
       studentClearedAt: '',
     }
 
+    try {
+      if (usingSupabase) {
+        await saveBooking(booking)
+      }
+    } catch (error) {
+      setFeedback(error.message)
+      return
+    }
+
     setAppState((previous) => ({ ...previous, bookings: [booking, ...previous.bookings] }))
     setActiveView('bookings')
     setFeedback(`Booking ${booking.id} was created and routed for approval.`)
   }
 
-  function decideAcademic(bookingId, decision, reason = '') {
+  async function decideAcademic(bookingId, decision, reason = '') {
     if (!currentUser || currentUser.roleGroup !== 'academic') {
       return
     }
@@ -235,6 +291,34 @@ function App() {
       return
     }
 
+    const reviewedAt = new Date().toISOString()
+    const updatedBooking = {
+      ...targetBooking,
+      academicStatus: decision,
+      academicReviewedBy: currentUser.username,
+      academicReviewedAt: reviewedAt,
+      academicDecisionReason: decision === 'rejected' ? reason.trim() : '',
+    }
+
+    try {
+      if (usingSupabase) {
+        await saveBooking(updatedBooking)
+        await addBookingReviewLogs([
+          {
+            bookingId,
+            stage: 'academic',
+            action: decision,
+            actorUsername: currentUser.username,
+            decisionReason: decision === 'rejected' ? reason.trim() : '',
+            actionAt: reviewedAt,
+          },
+        ])
+      }
+    } catch (error) {
+      setFeedback(error.message)
+      return
+    }
+
     setAppState((previous) => ({
       ...previous,
       bookings: previous.bookings.map((booking) => {
@@ -242,13 +326,7 @@ function App() {
           return booking
         }
 
-        return {
-          ...booking,
-          academicStatus: decision,
-          academicReviewedBy: currentUser.username,
-          academicReviewedAt: toIsoDate(new Date()),
-          academicDecisionReason: decision === 'rejected' ? reason.trim() : '',
-        }
+        return updatedBooking
       }),
     }))
 
@@ -259,7 +337,7 @@ function App() {
     )
   }
 
-  function decideWarden(bookingId, decision, reason = '') {
+  async function decideWarden(bookingId, decision, reason = '') {
     if (!currentUser || currentUser.roleGroup !== 'warden') {
       return
     }
@@ -269,50 +347,87 @@ function App() {
       return
     }
 
-    setAppState((previous) => {
-      const targetBooking = previous.bookings.find(
-        (booking) => booking.id === bookingId && booking.wardenStatus === 'pending',
-      )
+    const targetBooking = appState.bookings.find(
+      (booking) => booking.id === bookingId && booking.wardenStatus === 'pending',
+    )
 
-      if (!targetBooking) {
-        return previous
+    if (!targetBooking) {
+      return
+    }
+
+    const reviewedAt = new Date().toISOString()
+    const autoRejectReason =
+      'Automatically not approved because another overlapping request for this room and bed was approved first.'
+    const updatedBookings = appState.bookings.map((booking) => {
+      if (booking.id === bookingId) {
+        return {
+          ...booking,
+          wardenStatus: decision,
+          wardenReviewedBy: currentUser.username,
+          wardenReviewedAt: reviewedAt,
+          wardenDecisionReason: decision === 'rejected' ? reason.trim() : '',
+        }
       }
 
-      return {
-        ...previous,
-        bookings: previous.bookings.map((booking) => {
-          if (booking.id === bookingId) {
-            return {
-              ...booking,
-              wardenStatus: decision,
-              wardenReviewedBy: currentUser.username,
-              wardenReviewedAt: toIsoDate(new Date()),
-              wardenDecisionReason: decision === 'rejected' ? reason.trim() : '',
-            }
-          }
-
-          if (
-            decision === 'approved' &&
-            booking.wardenStatus === 'pending' &&
-            !booking.cancelledAt &&
-            booking.roomNumber === targetBooking.roomNumber &&
-            booking.bedNumber === targetBooking.bedNumber &&
-            datesOverlap(booking.checkIn, booking.checkOut, targetBooking.checkIn, targetBooking.checkOut)
-          ) {
-            return {
-              ...booking,
-              wardenStatus: 'rejected',
-              wardenReviewedBy: currentUser.username,
-              wardenReviewedAt: toIsoDate(new Date()),
-              wardenDecisionReason:
-                'Automatically not approved because another overlapping request for this room and bed was approved first.',
-            }
-          }
-
-          return booking
-        }),
+      if (
+        decision === 'approved' &&
+        booking.wardenStatus === 'pending' &&
+        !booking.cancelledAt &&
+        booking.roomNumber === targetBooking.roomNumber &&
+        booking.bedNumber === targetBooking.bedNumber &&
+        datesOverlap(booking.checkIn, booking.checkOut, targetBooking.checkIn, targetBooking.checkOut)
+      ) {
+        return {
+          ...booking,
+          wardenStatus: 'rejected',
+          wardenReviewedBy: currentUser.username,
+          wardenReviewedAt: reviewedAt,
+          wardenDecisionReason: autoRejectReason,
+        }
       }
+
+      return booking
     })
+
+    const changedBookings = updatedBookings.filter((booking, index) => booking !== appState.bookings[index])
+    const reviewLogs = [
+      {
+        bookingId,
+        stage: 'warden',
+        action: decision,
+        actorUsername: currentUser.username,
+        decisionReason: decision === 'rejected' ? reason.trim() : '',
+        actionAt: reviewedAt,
+      },
+      ...changedBookings
+        .filter((booking) => booking.id !== bookingId && booking.wardenDecisionReason === autoRejectReason)
+        .map((booking) => ({
+          bookingId: booking.id,
+          stage: 'warden',
+          action: 'rejected',
+          actorUsername: currentUser.username,
+          decisionReason: autoRejectReason,
+          actionAt: reviewedAt,
+        })),
+    ]
+
+    try {
+      if (usingSupabase) {
+        await saveBookings(changedBookings)
+        await addBookingReviewLogs(reviewLogs)
+      }
+    } catch (error) {
+      setFeedback(error.message)
+      return
+    }
+
+    setAppState((previous) => ({
+      ...previous,
+      bookings: previous.bookings.map((booking) => {
+        const updatedBooking = changedBookings.find((entry) => entry.id === booking.id)
+        return updatedBooking ?? booking
+      }),
+    }))
 
     setFeedback(
       decision === 'approved'
@@ -321,8 +436,31 @@ function App() {
     )
   }
 
-  function payBooking(bookingId) {
+  async function payBooking(bookingId) {
     if (!currentUser || currentUser.roleGroup !== 'student') {
+      return
+    }
+
+    const targetBooking = appState.bookings.find(
+      (booking) => booking.id === bookingId && booking.studentUsername === currentUser.username,
+    )
+
+    if (!targetBooking) {
+      return
+    }
+
+    const updatedBooking = {
+      ...targetBooking,
+      paymentStatus: 'paid',
+      paymentPaidAt: new Date().toISOString(),
+    }
+
+    try {
+      if (usingSupabase) {
+        await saveBooking(updatedBooking)
+      }
+    } catch (error) {
+      setFeedback(error.message)
       return
     }
 
@@ -333,18 +471,14 @@ function App() {
           return booking
         }
 
-        return {
-          ...booking,
-          paymentStatus: 'paid',
-          paymentPaidAt: toIsoDate(new Date()),
-        }
+        return updatedBooking
       }),
     }))
 
     setFeedback(`Payment completed for ${bookingId}. The QR code is now available.`)
   }
 
-  function cancelBooking(bookingId) {
+  async function cancelBooking(bookingId) {
     if (!currentUser || currentUser.roleGroup !== 'student') {
       return
     }
@@ -368,6 +502,20 @@ function App() {
       return
     }
 
+    const updatedBooking = {
+      ...targetBooking,
+      cancelledAt: new Date().toISOString(),
+    }
+
+    try {
+      if (usingSupabase) {
+        await saveBooking(updatedBooking)
+      }
+    } catch (error) {
+      setFeedback(error.message)
+      return
+    }
+
     setAppState((previous) => ({
       ...previous,
       bookings: previous.bookings.map((booking) => {
@@ -375,17 +523,14 @@ function App() {
           return booking
         }
 
-        return {
-          ...booking,
-          cancelledAt: toIsoDate(new Date()),
-        }
+        return updatedBooking
       }),
     }))
 
     setFeedback(`Booking ${bookingId} was cancelled successfully.`)
   }
 
-  function clearStudentBookingHistory(bookingId) {
+  async function clearStudentBookingHistory(bookingId) {
     if (!currentUser || currentUser.roleGroup !== 'student') {
       return
     }
@@ -406,6 +551,20 @@ function App() {
       return
     }
 
+    const updatedBooking = {
+      ...targetBooking,
+      studentClearedAt: new Date().toISOString(),
+    }
+
+    try {
+      if (usingSupabase) {
+        await saveBooking(updatedBooking)
+      }
+    } catch (error) {
+      setFeedback(error.message)
+      return
+    }
+
     setAppState((previous) => ({
       ...previous,
       bookings: previous.bookings.map((booking) => {
@@ -413,18 +572,29 @@ function App() {
           return booking
         }
 
-        return {
-          ...booking,
-          studentClearedAt: toIsoDate(new Date()),
-        }
+        return updatedBooking
       }),
     }))
 
     setFeedback(`Booking ${bookingId} was cleared from your history.`)
   }
 
-  function clearAcademicBookingHistory(bookingId) {
+  async function clearAcademicBookingHistory(bookingId) {
     if (!currentUser || currentUser.roleGroup !== 'academic') {
+      return
+    }
+
+    try {
+      if (usingSupabase) {
+        await addBookingClearance({
+          bookingId,
+          clearedByUsername: currentUser.username,
+          roleGroup: 'academic',
+          clearedAt: new Date().toISOString(),
+        })
+      }
+    } catch (error) {
+      setFeedback(error.message)
       return
     }
 
@@ -445,8 +615,22 @@ function App() {
     setFeedback(`Booking ${bookingId} was cleared from your academic history.`)
   }
 
-  function clearWardenBookingHistory(bookingId) {
+  async function clearWardenBookingHistory(bookingId) {
     if (!currentUser || currentUser.roleGroup !== 'warden') {
+      return
+    }
+
+    try {
+      if (usingSupabase) {
+        await addBookingClearance({
+          bookingId,
+          clearedByUsername: currentUser.username,
+          roleGroup: 'warden',
+          clearedAt: new Date().toISOString(),
+        })
+      }
+    } catch (error) {
+      setFeedback(error.message)
       return
     }
 
@@ -481,7 +665,7 @@ function App() {
     setFeedback('ESP32 log URL cleared. Automatic IoT sync is now turned off.')
   }
 
-  function importScanLogs({ deviceName, rawLog, silent = false }) {
+  async function importScanLogs({ deviceName, rawLog, silent = false }) {
     const importedLogs = parseIotLogRows(rawLog, appState.bookings, appState.users, deviceName)
 
     if (!importedLogs.length) {
@@ -491,21 +675,42 @@ function App() {
       return 0
     }
 
-    let addedCount = 0
-    setAppState((previous) => ({
-      ...previous,
-      scanLogs: mergeScanLogs(previous.scanLogs ?? [], importedLogs, (count) => {
-        addedCount = count
-      }),
-    }))
+    const existingLogs = appState.scanLogs ?? []
+    const seenKeys = new Set(existingLogs.map(createScanLogKey))
+    const newLogs = importedLogs.filter((log) => {
+      const key = createScanLogKey(log)
+      if (seenKeys.has(key)) {
+        return false
+      }
 
-    if (addedCount > 0) {
-      setFeedback(`${addedCount} new IoT scan confirmation row(s) were added to the warden history.`)
-    } else if (!silent) {
-      setFeedback('No new IoT scan rows were found in the scanner log.')
+      seenKeys.add(key)
+      return true
+    })
+
+    if (!newLogs.length) {
+      if (!silent) {
+        setFeedback('No new IoT scan rows were found in the scanner log.')
+      }
+      return 0
     }
 
-    return addedCount
+    try {
+      if (usingSupabase) {
+        await addScanLogs(newLogs)
+      }
+    } catch (error) {
+      setFeedback(error.message)
+      return 0
+    }
+
+    setAppState((previous) => ({
+      ...previous,
+      scanLogs: mergeScanLogs(previous.scanLogs ?? [], newLogs),
+    }))
+
+    setFeedback(`${newLogs.length} new IoT scan confirmation row(s) were added to the warden history.`)
+
+    return newLogs.length
   }
 
   async function syncIotLogFromUrl({ deviceName, silent = false, targetUrl: providedUrl = '' }) {

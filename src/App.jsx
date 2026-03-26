@@ -7,7 +7,6 @@ import {
   CONTACTS,
   DAILY_FEE,
   DEPARTMENT_OPTIONS,
-  RULE_GROUPS,
   SUBJECT_OPTIONS,
   TOTAL_ROOMS,
   WARDEN_ONLY_WORKFLOWS,
@@ -29,6 +28,7 @@ import {
 
 const STORAGE_KEY = 'hostel-system-demo-state-v1'
 const SESSION_KEY = 'hostel-system-demo-session-v1'
+const TRF_RULES_PDF = encodeURI('/TRF - Rules and Regulations.pdf')
 
 function scrollPageToTop(behavior = 'smooth') {
   window.scrollTo({
@@ -1003,23 +1003,7 @@ function HomeView({ currentUser, users }) {
         </section>
 
         <section className="two-column-grid">
-          <article className="panel-card">
-            <h3>TRF Rules</h3>
-            <div className="rule-grid single-column">
-              <div className="mini-card">
-                <h4>Common rules</h4>
-              </div>
-              <div className="mini-card">
-                <h4>Reading room rules</h4>
-              </div>
-              <div className="mini-card">
-                <h4>Bedroom rules</h4>
-              </div>
-              <div className="mini-card">
-                <h4>Rule breaking punishments</h4>
-              </div>
-            </div>
-          </article>
+          <RulesPdfPanel />
 
           <article className="panel-card">
             <h3>Contact Information</h3>
@@ -1068,21 +1052,7 @@ function HomeView({ currentUser, users }) {
       </section>
 
       <section className="two-column-grid">
-        <article className="panel-card">
-          <h3>TRF Rules</h3>
-          <div className="rule-grid">
-            {RULE_GROUPS.map((group) => (
-              <div className="mini-card" key={group.title}>
-                <h4>{group.title}</h4>
-                <ul className="plain-list">
-                  {group.items.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
-        </article>
+        <RulesPdfPanel />
 
         <article className="panel-card">
           <h3>Contact Information</h3>
@@ -1115,6 +1085,38 @@ function HomeView({ currentUser, users }) {
         </article>
       </section>
     </div>
+  )
+}
+
+function RulesPdfPanel() {
+  return (
+    <article className="panel-card pdf-panel">
+      <div className="section-heading pdf-panel-heading">
+        <div>
+          <h3>TRF Rules and Regulations</h3>
+          <p>View the PDF below or download it for offline use.</p>
+        </div>
+        <a className="ghost-button pdf-download-link" download href={TRF_RULES_PDF}>
+          Download PDF
+        </a>
+      </div>
+
+      <div className="pdf-frame-shell">
+        <iframe
+          className="pdf-frame"
+          src={`${TRF_RULES_PDF}#toolbar=1&navpanes=0&view=FitH`}
+          title="TRF rules and regulations PDF"
+        />
+      </div>
+
+      <p className="pdf-note">
+        If the preview does not load in your browser,{' '}
+        <a href={TRF_RULES_PDF} rel="noreferrer" target="_blank">
+          open the PDF in a new tab
+        </a>
+        .
+      </p>
+    </article>
   )
 }
 

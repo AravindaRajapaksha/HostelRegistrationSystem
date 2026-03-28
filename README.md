@@ -8,7 +8,7 @@ This project is a React + Vite frontend for a hostel booking workflow with:
 - QR generation
 - QR scan history from the IoT scanner
 
-The app currently still runs on local demo state in the browser. This repo now also includes the first Supabase database setup so we can move the website data into a real backend step by step.
+The app can now run with live Supabase-backed data for bookings, approvals, payments, clearances, and QR scan history. It also supports connecting the ESP32-CAM scanner log to the warden QR confirmation page.
 
 ## Supabase Files Added
 
@@ -48,7 +48,16 @@ This structure matches the current frontend data model:
 ```env
 VITE_SUPABASE_URL=...
 VITE_SUPABASE_ANON_KEY=...
+VITE_IOT_LOG_URL=http://192.168.1.50/view-log
 ```
+
+`VITE_IOT_LOG_URL` is optional, but recommended if you want the website to connect to the ESP32-CAM scanner log automatically without pasting the `/view-log` URL each time. Use a fixed IP address or DHCP reservation for the ESP32-CAM so this URL stays stable.
+
+When this URL is configured, the website can:
+
+- read `/view-log` to import QR scan confirmations into the warden page
+- clear the ESP32 scan log during workflow reset
+- sync approved-and-paid booking QR values into the ESP32 `users.txt` access list without changing the firmware
 
 7. Start the frontend:
 
@@ -58,16 +67,4 @@ npm run dev
 
 ## Important Note
 
-The UI is not switched over to live Supabase queries yet. Right now:
-
-- the website still uses local demo state from `src/data.js`
-- the database schema and frontend Supabase client are ready
-- the next step is replacing local state reads/writes with Supabase reads/writes
-
-## Suggested Next Step
-
-After this database setup, the next clean step is:
-
-1. connect login/profile loading to `profiles`
-2. connect booking creation to `booking_requests`
-3. connect QR scan history to `qr_scan_logs`
+The ESP32-CAM firmware still decides whether to open by checking its local `users.txt` file. The website now helps keep that file in sync by pushing approved-and-paid student QR values to the device over the existing HTTP endpoints.

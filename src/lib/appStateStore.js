@@ -49,11 +49,12 @@ export async function loadSupabaseAppState({ iotLogUrl = '' } = {}) {
   const supabase = requireSupabase()
   await ensureBookingStorageReady()
 
-  const [departmentsResult, profilesResult, bookingsResult, clearancesResult, scanLogsResult] =
+  const [departmentsResult, profilesResult, bookingsResult, reviewLogsResult, clearancesResult, scanLogsResult] =
     await Promise.all([
       supabase.from('departments').select('code, name').order('name'),
       supabase.from('profiles').select(PROFILE_COLUMNS).eq('is_active', true).order('username'),
       supabase.from('booking_requests').select(BOOKING_COLUMNS).order('created_at', { ascending: false }),
+      supabase.from('booking_review_logs').select(REVIEW_LOG_COLUMNS).order('action_at', { ascending: true }),
       supabase.from('booking_clearances').select('booking_id, cleared_by_username, role_group, cleared_at'),
       supabase.from('qr_scan_logs').select(SCAN_LOG_COLUMNS).order('scanned_at', { ascending: false }),
     ])
@@ -61,6 +62,7 @@ export async function loadSupabaseAppState({ iotLogUrl = '' } = {}) {
   throwOnResultError(departmentsResult, 'load departments')
   throwOnResultError(profilesResult, 'load profiles')
   throwOnResultError(bookingsResult, 'load bookings')
+  throwOnResultError(reviewLogsResult, 'load booking review logs')
   throwOnResultError(clearancesResult, 'load booking clearances')
   throwOnResultError(scanLogsResult, 'load QR scan logs')
 
@@ -75,11 +77,13 @@ export async function loadSupabaseAppState({ iotLogUrl = '' } = {}) {
   const bookings = (bookingsResult.data ?? []).map((booking) =>
     mapBookingToAppBooking(booking, departmentCodeToName, clearancesByBooking),
   )
+  const reviewLogs = (reviewLogsResult.data ?? []).map(mapReviewLogToAppReviewLog)
   const scanLogs = (scanLogsResult.data ?? []).map(mapScanLogToAppScanLog)
 
   return {
     users,
     bookings,
+    reviewLogs,
     scanLogs,
     iotLogUrl,
   }
@@ -149,7 +153,6 @@ export async function addScanLogs(scanLogs) {
   const supabase = requireSupabase()
   const result = await supabase.from('qr_scan_logs').upsert(
     scanLogs.map((log) => ({
-      id: normalizeNullableString(log.id),
       booking_id: normalizeNullableString(log.bookingId),
       student_username: normalizeNullableString(log.studentUsername),
       scanned_at: log.scannedAt,
@@ -167,6 +170,16 @@ export async function addScanLogs(scanLogs) {
   )
 
   throwOnResultError(result, 'save scan logs')
+}
+
+export async function clearQrScanLogs() {
+  const supabase = requireSupabase()
+  const result = await supabase
+    .from('qr_scan_logs')
+    .delete()
+    .not('id', 'is', null)
+
+  throwOnResultError(result, 'clear QR scan logs')
 }
 
 export async function resetWorkflowData() {
@@ -258,6 +271,16 @@ const SCAN_LOG_COLUMNS = [
   'result',
   'message',
   'device_name',
+]
+  .join(', ')
+
+const REVIEW_LOG_COLUMNS = [
+  'booking_id',
+  'stage',
+  'action',
+  'actor_username',
+  'decision_reason',
+  'action_at',
 ]
   .join(', ')
 
@@ -359,6 +382,17 @@ function mapScanLogToAppScanLog(log) {
     result: log.result ?? 'not confirmed',
     message: log.message ?? 'No scan message available.',
     deviceName: log.device_name ?? DEFAULT_DEVICE_NAME,
+  }
+}
+
+function mapReviewLogToAppReviewLog(log) {
+  return {
+    bookingId: log.booking_id,
+    stage: log.stage,
+    action: log.action,
+    actorUsername: log.actor_username,
+    decisionReason: log.decision_reason ?? '',
+    actionAt: log.action_at,
   }
 }
 

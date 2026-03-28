@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import QRCode from 'qrcode'
 import './App.css'
 import {
@@ -29,6 +29,7 @@ import {
   addBookingClearance,
   addBookingReviewLogs,
   addScanLogs,
+  clearQrScanLogs,
   ensureBookingStorageReady,
   loadSupabaseAppState,
   resetWorkflowData,
@@ -41,6 +42,7 @@ import {
 const STORAGE_KEY = 'hostel-system-demo-state-v1'
 const SESSION_KEY = 'hostel-system-demo-session-v1'
 const TRF_RULES_PDF = encodeURI('/TRF - Rules and Regulations.pdf')
+const DEFAULT_IOT_LOG_URL = String(import.meta.env.VITE_IOT_LOG_URL ?? '').trim()
 
 function scrollPageToTop(behavior = 'smooth') {
   window.scrollTo({
@@ -61,6 +63,12 @@ function App() {
 
   const currentUser = appState.users.find((user) => user.username === session?.username) ?? null
 
+  const fetchRemoteState = useCallback(async (iotLogUrl = appState.iotLogUrl ?? '') => {
+    return resolveAppState(
+      await loadSupabaseAppState({ iotLogUrl: resolveIotLogUrl(iotLogUrl) }),
+    )
+  }, [appState.iotLogUrl])
+
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(appState))
   }, [appState])
@@ -74,9 +82,7 @@ function App() {
 
     async function hydrateFromSupabase() {
       try {
-        const remoteState = await loadSupabaseAppState({
-          iotLogUrl: appState.iotLogUrl ?? '',
-        })
+        const remoteState = await fetchRemoteState()
 
         if (isCancelled) {
           return
@@ -100,7 +106,40 @@ function App() {
     return () => {
       isCancelled = true
     }
-  }, [appState.iotLogUrl, usingSupabase])
+  }, [fetchRemoteState, usingSupabase])
+
+  useEffect(() => {
+    if (!usingSupabase) {
+      return
+    }
+
+    let syncInProgress = false
+
+    async function syncFromSupabaseOnFocus() {
+      if (document.visibilityState === 'hidden' || syncInProgress) {
+        return
+      }
+
+      syncInProgress = true
+
+      try {
+        const remoteState = await fetchRemoteState()
+        setAppState(remoteState)
+      } catch {
+        // Keep the existing in-memory state if the live refresh is temporarily unavailable.
+      } finally {
+        syncInProgress = false
+      }
+    }
+
+    window.addEventListener('focus', syncFromSupabaseOnFocus)
+    document.addEventListener('visibilitychange', syncFromSupabaseOnFocus)
+
+    return () => {
+      window.removeEventListener('focus', syncFromSupabaseOnFocus)
+      document.removeEventListener('visibilitychange', syncFromSupabaseOnFocus)
+    }
+  }, [fetchRemoteState, usingSupabase])
 
   useEffect(() => {
     if (session && currentUser) {
@@ -114,9 +153,21 @@ function App() {
     window.localStorage.removeItem(SESSION_KEY)
   }, [activeView, currentUser, session])
 
-  function handleLogin({ username, password }) {
+  async function handleLogin({ username, password }) {
+    let usersForLogin = appState.users
+
+    if (usingSupabase) {
+      try {
+        const remoteState = await fetchRemoteState()
+        setAppState(remoteState)
+        usersForLogin = remoteState.users
+      } catch (error) {
+        setFeedback(`${error.message} Using the current local data for login.`)
+      }
+    }
+
     const normalizedUsername = username.trim().toLowerCase()
-    const user = appState.users.find(
+    const user = usersForLogin.find(
       (entry) =>
         entry.username.toLowerCase() === normalizedUsername && entry.password === password.trim(),
     )
@@ -270,7 +321,10 @@ function App() {
       return
     }
 
-    setAppState((previous) => ({ ...previous, bookings: [booking, ...previous.bookings] }))
+    setAppState((previous) => resolveAppState({
+      ...previous,
+      bookings: [booking, ...previous.bookings],
+    }))
     setActiveView('bookings')
     setFeedback(`Booking ${booking.id} was created and routed for approval.`)
   }
@@ -423,7 +477,7 @@ function App() {
       return false
     }
 
-    setAppState((previous) => ({
+    setAppState((previous) => resolveAppState({
       ...previous,
       users: upsertUser(previous.users, nextStudent),
       bookings: [booking, ...previous.bookings],
@@ -457,35 +511,39 @@ function App() {
     }
 
     const reviewedAt = new Date().toISOString()
-    const updatedBooking = {
-      ...targetBooking,
-      academicStatus: decision,
-      academicReviewedBy: currentUser.username,
-      academicReviewedAt: reviewedAt,
-      academicDecisionReason: decision === 'rejected' ? reason.trim() : '',
+    const nextReviewLog = {
+      bookingId,
+      stage: 'academic',
+      action: decision,
+      actorUsername: currentUser.username,
+      decisionReason: decision === 'rejected' ? reason.trim() : '',
+      actionAt: reviewedAt,
     }
+    const nextReviewLogs = upsertBookingReviewLog(appState.reviewLogs ?? [], nextReviewLog)
+    const updatedBooking = applyAcademicReviewState(
+      {
+        ...targetBooking,
+        academicReviewedBy: currentUser.username,
+        academicReviewedAt: reviewedAt,
+        academicDecisionReason: decision === 'rejected' ? reason.trim() : '',
+      },
+      appState.users,
+      nextReviewLogs,
+    )
 
     try {
       if (usingSupabase) {
         await saveBooking(updatedBooking)
-        await addBookingReviewLogs([
-          {
-            bookingId,
-            stage: 'academic',
-            action: decision,
-            actorUsername: currentUser.username,
-            decisionReason: decision === 'rejected' ? reason.trim() : '',
-            actionAt: reviewedAt,
-          },
-        ])
+        await addBookingReviewLogs([nextReviewLog])
       }
     } catch (error) {
       setFeedback(error.message)
       return
     }
 
-    setAppState((previous) => ({
+    setAppState((previous) => resolveAppState({
       ...previous,
+      reviewLogs: upsertBookingReviewLog(previous.reviewLogs ?? [], nextReviewLog),
       bookings: previous.bookings.map((booking) => {
         if (booking.id !== bookingId || booking.academicStatus !== 'pending') {
           return booking
@@ -495,10 +553,14 @@ function App() {
       }),
     }))
 
+    const refreshedBooking = applyAcademicReviewState(updatedBooking, appState.users, nextReviewLogs)
+
     setFeedback(
-      decision === 'approved'
-        ? `Academic approval recorded for ${bookingId}.`
-        : `Academic rejection recorded for ${bookingId} with the not-approved reason.`,
+      refreshedBooking.academicStatus === 'approved'
+        ? `Academic approval recorded for ${bookingId}. The request is now ready for warden review.`
+        : decision === 'approved'
+          ? `Academic approval recorded for ${bookingId}.`
+          : `Academic rejection recorded for ${bookingId}. The request will not move to warden review.`,
     )
   }
 
@@ -720,6 +782,13 @@ function App() {
       paymentStatus: 'paid',
       paymentPaidAt: new Date().toISOString(),
     }
+    const updatedBookings = appState.bookings.map((booking) => {
+      if (booking.id !== bookingId || booking.studentUsername !== currentUser.username) {
+        return booking
+      }
+
+      return updatedBooking
+    })
 
     try {
       if (usingSupabase) {
@@ -732,16 +801,16 @@ function App() {
 
     setAppState((previous) => ({
       ...previous,
-      bookings: previous.bookings.map((booking) => {
-        if (booking.id !== bookingId || booking.studentUsername !== currentUser.username) {
-          return booking
-        }
-
-        return updatedBooking
-      }),
+      bookings: updatedBookings,
     }))
 
-    setFeedback(`Payment completed for ${bookingId}. The QR code is now available.`)
+    const iotSyncResult = await syncApprovedBookingsToIot({ bookings: updatedBookings, silent: true })
+
+    setFeedback(
+      iotSyncResult.attempted && iotSyncResult.cleared
+        ? `Payment completed for ${bookingId}. The QR code is now available and synced to the ESP32 scanner.`
+        : `Payment completed for ${bookingId}. The QR code is now available.`,
+    )
   }
 
   async function recordEmergencyPayment(bookingId) {
@@ -770,6 +839,7 @@ function App() {
       paymentStatus: 'paid',
       paymentPaidAt: new Date().toISOString(),
     }
+    const updatedBookings = appState.bookings.map((booking) => (booking.id === bookingId ? updatedBooking : booking))
 
     try {
       if (usingSupabase) {
@@ -782,10 +852,16 @@ function App() {
 
     setAppState((previous) => ({
       ...previous,
-      bookings: previous.bookings.map((booking) => (booking.id === bookingId ? updatedBooking : booking)),
+      bookings: updatedBookings,
     }))
 
-    setFeedback(`Emergency payment completed for ${bookingId}. The QR code is now available.`)
+    const iotSyncResult = await syncApprovedBookingsToIot({ bookings: updatedBookings, silent: true })
+
+    setFeedback(
+      iotSyncResult.attempted && iotSyncResult.cleared
+        ? `Emergency payment completed for ${bookingId}. The QR code is now available and synced to the ESP32 scanner.`
+        : `Emergency payment completed for ${bookingId}. The QR code is now available.`,
+    )
   }
 
   async function cancelBooking(bookingId) {
@@ -962,17 +1038,83 @@ function App() {
   }
 
   function updateIotLogUrl(nextUrl) {
+    const resolvedUrl = resolveIotLogUrl(nextUrl)
+
     setAppState((previous) => ({
       ...previous,
-      iotLogUrl: nextUrl,
+      iotLogUrl: resolvedUrl,
     }))
 
-    if (nextUrl.trim()) {
+    if (resolvedUrl) {
       setFeedback('ESP32 log URL saved. QR confirmation sync will keep checking the device log.')
       return
     }
 
     setFeedback('ESP32 log URL cleared. Automatic IoT sync is now turned off.')
+  }
+
+  async function syncApprovedBookingsToIot({ targetUrl: providedUrl = '', silent = false, bookings = appState.bookings } = {}) {
+    const targetUrl = resolveIotLogUrl(providedUrl || appState.iotLogUrl || '')
+
+    if (!targetUrl) {
+      if (!silent) {
+        setFeedback('Add the ESP32 /view-log link first so the website can sync approved QR access to the device.')
+      }
+
+      return {
+        attempted: false,
+        cleared: false,
+        syncedCount: 0,
+      }
+    }
+
+    const allowedBookings = getApprovedPaidIotBookings(bookings)
+
+    try {
+      const parsedUrl = new URL(targetUrl)
+      const clearUsersUrl = `${parsedUrl.origin}/get?delete=users`
+      const clearResponse = await fetch(`/api/iot-log?url=${encodeURIComponent(clearUsersUrl)}`)
+
+      if (!clearResponse.ok) {
+        throw new Error('iot-user-clear-failed')
+      }
+
+      for (const booking of allowedBookings) {
+        const addUserUrl = new URL('/get', `${parsedUrl.origin}/`)
+        addUserUrl.searchParams.set('qrCode', booking.qrValue)
+        addUserUrl.searchParams.set('role', 'Student')
+
+        const addResponse = await fetch(`/api/iot-log?url=${encodeURIComponent(addUserUrl.toString())}`)
+
+        if (!addResponse.ok) {
+          throw new Error('iot-user-sync-failed')
+        }
+      }
+
+      if (!silent) {
+        setFeedback(
+          allowedBookings.length
+            ? `${allowedBookings.length} approved and paid student QR code(s) were synced to the ESP32 scanner access list.`
+            : 'The ESP32 scanner access list was cleared. No approved and paid student QR codes are active right now.',
+        )
+      }
+
+      return {
+        attempted: true,
+        cleared: true,
+        syncedCount: allowedBookings.length,
+      }
+    } catch {
+      if (!silent) {
+        setFeedback('The website could not update the ESP32 approved-student list. Check the ESP32 URL and make sure both devices are on the same network.')
+      }
+
+      return {
+        attempted: true,
+        cleared: false,
+        syncedCount: 0,
+      }
+    }
   }
 
   async function importScanLogs({ deviceName, rawLog, silent = false }) {
@@ -1013,10 +1155,22 @@ function App() {
       return 0
     }
 
-    setAppState((previous) => ({
-      ...previous,
-      scanLogs: mergeScanLogs(previous.scanLogs ?? [], newLogs),
-    }))
+    if (usingSupabase) {
+      try {
+        const remoteState = await fetchRemoteState(appState.iotLogUrl ?? '')
+        setAppState(remoteState)
+      } catch {
+        setAppState((previous) => ({
+          ...previous,
+          scanLogs: mergeScanLogs(previous.scanLogs ?? [], newLogs),
+        }))
+      }
+    } else {
+      setAppState((previous) => ({
+        ...previous,
+        scanLogs: mergeScanLogs(previous.scanLogs ?? [], newLogs),
+      }))
+    }
 
     setFeedback(`${newLogs.length} new IoT scan confirmation row(s) were added to the warden history.`)
 
@@ -1024,7 +1178,7 @@ function App() {
   }
 
   async function syncIotLogFromUrl({ deviceName, silent = false, targetUrl: providedUrl = '' }) {
-    const targetUrl = (providedUrl || appState.iotLogUrl || '').trim()
+    const targetUrl = resolveIotLogUrl(providedUrl || appState.iotLogUrl || '')
 
     if (!targetUrl) {
       if (!silent) {
@@ -1049,22 +1203,54 @@ function App() {
     }
   }
 
-  async function resetAllWorkflowData() {
-    if (!currentUser || currentUser.roleGroup !== 'warden' || currentUser.roleLabel !== 'Warden') {
-      setFeedback('Only the main warden can reset the booking workflow data.')
-      return false
+  async function clearIotDeviceLog(logUrl) {
+    const resolvedUrl = resolveIotLogUrl(logUrl)
+
+    if (!resolvedUrl) {
+      return {
+        attempted: false,
+        cleared: false,
+      }
     }
 
     try {
+      const parsedUrl = new URL(resolvedUrl)
+      const clearUrl = `${parsedUrl.origin}/get?delete=log`
+      const response = await fetch(`/api/iot-log?url=${encodeURIComponent(clearUrl)}`)
+
+      return {
+        attempted: true,
+        cleared: response.ok,
+      }
+    } catch {
+      return {
+        attempted: true,
+        cleared: false,
+      }
+    }
+  }
+
+  async function clearQrConfirmationHistory() {
+    if (!currentUser || currentUser.roleGroup !== 'warden') {
+      setFeedback('Only warden accounts can clear QR confirmations.')
+      return false
+    }
+
+    const configuredIotLogUrl = resolveIotLogUrl(appState.iotLogUrl)
+    let deviceLogClearAttempted = false
+    let deviceLogCleared = false
+
+    try {
       if (usingSupabase) {
-        await resetWorkflowData()
-        const remoteState = await loadSupabaseAppState({ iotLogUrl: '' })
+        await clearQrScanLogs()
+        const scannerReset = await clearIotDeviceLog(configuredIotLogUrl)
+        deviceLogClearAttempted = scannerReset.attempted
+        deviceLogCleared = scannerReset.cleared
+        const remoteState = await fetchRemoteState(configuredIotLogUrl)
         setAppState(remoteState)
       } else {
         setAppState((previous) => ({
           ...previous,
-          bookings: [],
-          iotLogUrl: '',
           scanLogs: [],
         }))
       }
@@ -1072,9 +1258,64 @@ function App() {
       setFeedback(error.message)
       return false
     }
+
     setFeedback(
-      'Booking requests, approval history, clearance history, QR scan logs, and the saved scanner log URL were reset. Student profiles and master tables were kept.',
+      deviceLogCleared
+        ? 'QR confirmation history was cleared from the website and the ESP32 scan log was cleared too.'
+        : deviceLogClearAttempted
+          ? 'QR confirmation history was cleared from the website, but the ESP32 scan log could not be cleared.'
+          : 'QR confirmation history was cleared from the website.',
     )
+
+    return true
+  }
+
+  async function resetAllWorkflowData() {
+    if (!currentUser || currentUser.roleGroup !== 'warden' || currentUser.roleLabel !== 'Warden') {
+      setFeedback('Only the main warden can reset the booking workflow data.')
+      return false
+    }
+
+    const configuredIotLogUrl = resolveIotLogUrl(appState.iotLogUrl)
+    let scannerResetAttempted = false
+    let scannerLogCleared = false
+    let scannerUsersCleared = false
+
+    try {
+      if (usingSupabase) {
+        await resetWorkflowData()
+        const scannerReset = await clearIotDeviceLog(configuredIotLogUrl)
+        scannerResetAttempted = scannerReset.attempted
+        scannerLogCleared = scannerReset.cleared
+        const userReset = await syncApprovedBookingsToIot({
+          targetUrl: configuredIotLogUrl,
+          bookings: [],
+          silent: true,
+        })
+        scannerUsersCleared = userReset.cleared
+        const remoteState = await fetchRemoteState(configuredIotLogUrl)
+        setAppState(remoteState)
+      } else {
+        setAppState((previous) => ({
+          ...previous,
+          bookings: [],
+          reviewLogs: [],
+          iotLogUrl: configuredIotLogUrl,
+          scanLogs: [],
+        }))
+      }
+    } catch (error) {
+      setFeedback(error.message)
+      return false
+    }
+    const resetMessage = scannerLogCleared
+      ? scannerUsersCleared
+        ? 'Booking requests, approval history, clearance history, and QR scan logs were reset. The ESP32 scan log and approved-student access list were also cleared.'
+        : 'Booking requests, approval history, clearance history, and QR scan logs were reset. The ESP32 scan log was cleared, but the approved-student access list could not be refreshed.'
+      : scannerResetAttempted
+        ? 'Booking requests, approval history, clearance history, and QR scan logs were reset. The ESP32 scan log could not be cleared, so old device scan rows may return until the ESP32 log is cleared.'
+        : 'Booking requests, approval history, clearance history, and QR scan logs were reset. Student profiles and master tables were kept.'
+    setFeedback(resetMessage)
     setActiveView('home')
     return true
   }
@@ -1115,10 +1356,12 @@ function App() {
         onClearAcademicBooking: clearAcademicBookingHistory,
         onClearStudentBooking: clearStudentBookingHistory,
         onClearWardenBooking: clearWardenBookingHistory,
+        onClearQrConfirmations: clearQrConfirmationHistory,
         onPayBooking: payBooking,
         onRecordEmergencyPayment: recordEmergencyPayment,
         onResetWorkflowData: resetAllWorkflowData,
         onSubmitBooking: submitBooking,
+        onSyncIotAccess: syncApprovedBookingsToIot,
         onSyncIotLog: syncIotLogFromUrl,
         onUpdateIotLogUrl: updateIotLogUrl,
         onWardenDecision: decideWarden,
@@ -1138,10 +1381,12 @@ function renderView({
   onClearAcademicBooking,
   onClearStudentBooking,
   onClearWardenBooking,
+  onClearQrConfirmations,
   onPayBooking,
   onRecordEmergencyPayment,
   onResetWorkflowData,
   onSubmitBooking,
+  onSyncIotAccess,
   onSyncIotLog,
   onUpdateIotLogUrl,
   onWardenDecision,
@@ -1190,7 +1435,7 @@ function renderView({
     const relevant = appState.bookings
       .filter((booking) => booking.workflow === 'regular')
       .filter((booking) => !booking.cancelledAt)
-      .filter((booking) => canAcademicUserReviewBooking(currentUser, booking))
+      .filter((booking) => canAcademicUserAccessRegularBooking(currentUser, booking))
       .sort(sortRecentFirst)
     const feedbackRelevant = appState.bookings
       .filter((booking) => !booking.cancelledAt)
@@ -1200,7 +1445,7 @@ function renderView({
     if (activeView === 'dashboard') {
       return (
         <AcademicDashboardView
-          approvalBookings={relevant.filter((booking) => booking.academicStatus === 'pending')}
+          approvalBookings={relevant.filter((booking) => canAcademicUserReviewBooking(currentUser, booking))}
           currentUser={currentUser}
           feedbackBookings={feedbackRelevant}
           onSubmitFeedback={onAcademicSpecialFeedback}
@@ -1213,7 +1458,7 @@ function renderView({
     if (activeView === 'approved') {
       return (
         <DecisionListView
-          bookings={relevant.filter((booking) => booking.academicStatus === 'approved')}
+          bookings={relevant.filter((booking) => getAcademicDecisionForUser(booking, currentUser) === 'approved')}
           onClear={onClearAcademicBooking}
           currentUser={currentUser}
           emptyCopy="No approved requests are available yet."
@@ -1226,7 +1471,7 @@ function renderView({
     if (activeView === 'rejected') {
       return (
         <DecisionListView
-          bookings={relevant.filter((booking) => getCurrentStatus(booking) === 'not approved')}
+          bookings={relevant.filter((booking) => getAcademicDecisionForUser(booking, currentUser) === 'rejected')}
           onClear={onClearAcademicBooking}
           currentUser={currentUser}
           emptyCopy="No not-approved requests are available yet."
@@ -1306,6 +1551,8 @@ function renderView({
         bookings={appState.bookings}
         currentUser={currentUser}
         iotLogUrl={appState.iotLogUrl ?? ''}
+        onClearConfirmations={onClearQrConfirmations}
+        onSyncIotAccess={onSyncIotAccess}
         onSyncIotLog={onSyncIotLog}
         onUpdateIotLogUrl={onUpdateIotLogUrl}
         scanLogs={appState.scanLogs ?? []}
@@ -2093,7 +2340,6 @@ function EmergencyPermissionView({
 }) {
   const [query, setQuery] = useState('')
   const [form, setForm] = useState(() => createInitialEmergencyForm())
-  const requestedDays = calculateRequestedDays(form.checkIn, form.checkOut)
   const availableBeds = getAvailableBeds(allBookings, form.checkIn, form.checkOut, '', form.gender)
     .filter((bed) => getVisibleRoomNumbersForWarden(currentUser).includes(bed.roomNumber))
   const roomOptions = uniqueRoomOptions(availableBeds)
@@ -2968,6 +3214,9 @@ function BookingCard({ action = null, booking, collapsible = false, currentUser 
   const academicReviewer = users.find((user) => user.username === booking.academicReviewedBy)
   const wardenReviewer = users.find((user) => user.username === booking.wardenReviewedBy)
   const academicApproverUsers = getAcademicApproverUsers(users, booking)
+  const academicApprovedUsers = getAcademicApprovedReviewerUsers(users, booking)
+  const academicPendingUsers = getAcademicPendingReviewerUsers(users, booking)
+  const academicRejectedUsers = getAcademicRejectedReviewerUsers(users, booking)
   const specialFeedbackRequestedBy = users.find(
     (user) => user.username === booking.specialFeedbackRequestedBy,
   )
@@ -2984,6 +3233,24 @@ function BookingCard({ action = null, booking, collapsible = false, currentUser 
   const isWardenOnlyBooking = WARDEN_ONLY_WORKFLOWS.includes(booking.workflow)
   const canViewSpecialFeedback = canViewerSeeSpecialFeedback(currentUser, booking)
   const rejectionReason = getRejectionReason(booking)
+  const viewerAcademicDecision = getAcademicDecisionForUser(booking, currentUser)
+  const academicReviewLabel = isWardenOnlyBooking
+    ? 'Not required'
+    : booking.academicStatus === 'approved'
+      ? academicApprovedUsers.length
+        ? `${formatPersonLabelList(academicApprovedUsers)} approved`
+        : academicReviewer
+          ? `${academicReviewer.roleLabel} - ${academicReviewer.name}`
+          : 'Approved'
+      : booking.academicStatus === 'rejected'
+        ? academicRejectedUsers.length
+          ? `${formatPersonLabelList(academicRejectedUsers)} did not approve`
+          : academicReviewer
+            ? `${academicReviewer.roleLabel} - ${academicReviewer.name}`
+            : 'Rejected'
+        : academicPendingUsers.length
+          ? `Pending from ${formatPersonLabelList(academicPendingUsers)}`
+          : 'Pending'
   const specialFeedbackDetails =
     canViewSpecialFeedback &&
     isWardenOnlyBooking &&
@@ -3024,7 +3291,11 @@ function BookingCard({ action = null, booking, collapsible = false, currentUser 
         ]
       : []
   const summaryLabel =
-    status === 'not approved'
+    currentUser?.roleGroup === 'academic' && viewerAcademicDecision === 'approved' && status === 'pending academic'
+      ? 'You approved this request'
+      : currentUser?.roleGroup === 'academic' && viewerAcademicDecision === 'rejected'
+        ? 'You marked this request as not approved'
+      : status === 'not approved'
       ? 'Request not approved'
       : status === 'approved' && !isPaymentComplete(booking)
       ? `Payment ${formatCurrency(booking.paymentTotal)} pending`
@@ -3119,13 +3390,7 @@ function BookingCard({ action = null, booking, collapsible = false, currentUser 
                 ],
                 [
                   'Academic staff review',
-                  isWardenOnlyBooking
-                    ? 'Not required'
-                    : academicReviewer
-                      ? `${academicReviewer.roleLabel} - ${academicReviewer.name}`
-                      : booking.academicStatus === 'pending'
-                        ? 'Pending'
-                        : booking.academicStatus,
+                  academicReviewLabel,
                 ],
                 [
                   'Academic review date',
@@ -3215,6 +3480,8 @@ function ScanConfirmationsView({
   bookings,
   currentUser,
   iotLogUrl,
+  onClearConfirmations,
+  onSyncIotAccess,
   onSyncIotLog,
   onUpdateIotLogUrl,
   scanLogs,
@@ -3279,15 +3546,32 @@ function ScanConfirmationsView({
     })
     .sort((left, right) => new Date(right.scannedAt) - new Date(left.scannedAt))
 
-  function handleConnect(event) {
+  async function handleConnect(event) {
     event.preventDefault()
     onUpdateIotLogUrl(draftUrl)
-    onSyncIotLog({ deviceName, targetUrl: draftUrl })
+    await onSyncIotAccess({ targetUrl: draftUrl, silent: true })
+    await onSyncIotLog({ deviceName, targetUrl: draftUrl })
   }
 
   function handleDisconnect() {
     setDraftUrl('')
     onUpdateIotLogUrl('')
+  }
+
+  async function handleClearConfirmations() {
+    if (!onClearConfirmations) {
+      return
+    }
+
+    const shouldClear = window.confirm(
+      'Clear all QR confirmation rows from the website and try to clear the ESP32 scan log too?',
+    )
+
+    if (!shouldClear) {
+      return
+    }
+
+    await onClearConfirmations()
   }
 
   return (
@@ -3312,6 +3596,10 @@ function ScanConfirmationsView({
         Confirmation rows and matched student details appear automatically when scanner data is available.
       </p>
 
+      <p className="scan-auto-note">
+        Approved and paid student QR codes can also be synced to the ESP32 access list so the scanner opens only for active hostel bookings.
+      </p>
+
       <form className="iot-connect-panel" onSubmit={handleConnect}>
         <label className="field full-span">
           <span>ESP32 scanner log URL</span>
@@ -3332,6 +3620,20 @@ function ScanConfirmationsView({
             type="button"
           >
             Sync now
+          </button>
+          <button
+            className="ghost-button"
+            onClick={() => onSyncIotAccess({})}
+            type="button"
+          >
+            Sync approved QR access
+          </button>
+          <button
+            className="ghost-button"
+            onClick={handleClearConfirmations}
+            type="button"
+          >
+            Clear confirmations
           </button>
           <button className="ghost-button" onClick={handleDisconnect} type="button">
             Clear URL
@@ -3575,11 +3877,12 @@ function QrPreview({ bookingId = 'booking', value }) {
     let mounted = true
 
     QRCode.toDataURL(value, {
-      margin: 1,
-      width: 220,
+      margin: 4,
+      width: 240,
+      errorCorrectionLevel: 'M',
       color: {
-        dark: '#173c72',
-        light: '#f7fbff',
+        dark: '#000000',
+        light: '#ffffff',
       },
     }).then((result) => {
       if (mounted) {
@@ -3641,29 +3944,44 @@ function getDefaultView() {
 
 function getPrimaryAcademicApprover(users, department) {
   return (
-    users.find(
-      (user) =>
-        user.roleGroup === 'academic' &&
-        user.roleLabel === 'Head of Department (HOD)' &&
-        user.department === department,
-    ) ??
-    users.find(
-      (user) =>
-        user.roleGroup === 'academic' &&
-        user.roleLabel === 'Academic coordinator' &&
-        user.department === department,
-    ) ??
-    users.find((user) => isStudentCounselor(user)) ??
+    getDepartmentHod(users, department) ??
+    getDepartmentAcademicCoordinator(users, department) ??
     null
   )
 }
 
-function canAcademicUserReviewBooking(user, booking) {
+function canAcademicUserAccessRegularBooking(user, booking) {
   if (user.roleGroup !== 'academic' || booking.workflow !== 'regular') {
     return false
   }
 
-  return isStudentCounselor(user) || user.department === booking.department
+  const reviewTeamUsernames = getBookingAcademicTeamUsernames(booking)
+
+  if (reviewTeamUsernames.length) {
+    return reviewTeamUsernames.includes(user.username)
+  }
+
+  return (
+    user.username === normalizeAcademicUsername(booking.academicApproverUsername, booking.department) ||
+    isDepartmentAcademicCoordinator(user, booking.department)
+  )
+}
+
+function canAcademicUserReviewBooking(user, booking) {
+  if (!canAcademicUserAccessRegularBooking(user, booking)) {
+    return false
+  }
+
+  const pendingReviewerUsernames = getPendingAcademicReviewerUsernames(booking)
+
+  if (pendingReviewerUsernames.length || booking.academicStatus !== 'pending') {
+    return pendingReviewerUsernames.includes(user.username)
+  }
+
+  return (
+    user.username === normalizeAcademicUsername(booking.academicApproverUsername, booking.department) ||
+    isDepartmentAcademicCoordinator(user, booking.department)
+  )
 }
 
 function canAcademicUserProvideSpecialFeedback(user, booking) {
@@ -3702,11 +4020,110 @@ function getAcademicApproverUsers(users, booking) {
     return []
   }
 
+  const teamUsernames = getBookingAcademicTeamUsernames(booking)
+  const matchingUsers = users.filter((user) => teamUsernames.includes(user.username))
+  return matchingUsers.length ? matchingUsers : getRegularAcademicReviewUsers(users, booking)
+}
+
+function getAcademicPendingReviewerUsers(users, booking) {
+  return users.filter((user) => getPendingAcademicReviewerUsernames(booking).includes(user.username))
+}
+
+function getAcademicApprovedReviewerUsers(users, booking) {
+  return users.filter((user) => (booking.academicApprovedReviewerUsernames ?? []).includes(user.username))
+}
+
+function getAcademicRejectedReviewerUsers(users, booking) {
+  return users.filter((user) => (booking.academicRejectedReviewerUsernames ?? []).includes(user.username))
+}
+
+function getRegularAcademicReviewUsers(users, booking) {
+  if (WARDEN_ONLY_WORKFLOWS.includes(booking.workflow) || booking.workflow !== 'regular') {
+    return []
+  }
+
+  const hod = getDepartmentHod(users, booking.department)
+  const coordinator = getDepartmentAcademicCoordinator(users, booking.department)
+  const reviewTeam = [hod, coordinator]
+    .filter(Boolean)
+    .filter((user, index, collection) => collection.findIndex((entry) => entry.username === user.username) === index)
+
+  if (reviewTeam.length) {
+    return reviewTeam
+  }
+
   return users.filter(
     (user) =>
       user.roleGroup === 'academic' &&
-      (user.department === booking.department || isStudentCounselor(user)),
+      user.department === booking.department &&
+      (user.roleLabel === 'Head of Department (HOD)' || user.roleLabel === 'Academic coordinator'),
   )
+}
+
+function getDepartmentHod(users, department) {
+  return users.find(
+    (user) =>
+      user.roleGroup === 'academic' &&
+      user.roleLabel === 'Head of Department (HOD)' &&
+      user.department === department,
+  ) ?? null
+}
+
+function getDepartmentAcademicCoordinator(users, department) {
+  return users.find(
+    (user) =>
+      user.roleGroup === 'academic' &&
+      user.roleLabel === 'Academic coordinator' &&
+      user.department === department,
+  ) ?? null
+}
+
+function isDepartmentAcademicCoordinator(user, department) {
+  return (
+    user?.roleGroup === 'academic' &&
+    user.roleLabel === 'Academic coordinator' &&
+    user.department === department
+  )
+}
+
+function getBookingAcademicTeamUsernames(booking) {
+  return booking.academicReviewTeamUsernames ?? []
+}
+
+function getPendingAcademicReviewerUsernames(booking) {
+  if (Array.isArray(booking.academicPendingReviewerUsernames)) {
+    return booking.academicPendingReviewerUsernames
+  }
+
+  if (booking.academicStatus !== 'pending') {
+    return []
+  }
+
+  return getBookingAcademicTeamUsernames(booking)
+}
+
+function getAcademicDecisionForUser(booking, user) {
+  if (!user || user.roleGroup !== 'academic' || booking.workflow !== 'regular') {
+    return ''
+  }
+
+  const reviewEntries = Array.isArray(booking.academicReviewEntries) ? booking.academicReviewEntries : []
+  const latestEntry = [...reviewEntries]
+    .filter((entry) => entry.actorUsername === user.username)
+    .sort((left, right) => new Date(left.actionAt || 0) - new Date(right.actionAt || 0))
+    .at(-1)
+
+  if (latestEntry?.action === 'approved' || latestEntry?.action === 'rejected') {
+    return latestEntry.action
+  }
+
+  if (booking.academicReviewedBy === user.username) {
+    if (booking.academicStatus === 'approved' || booking.academicStatus === 'rejected') {
+      return booking.academicStatus
+    }
+  }
+
+  return ''
 }
 
 function getSpecialFeedbackCandidateUsers(users, booking) {
@@ -4091,6 +4508,12 @@ function getScanVerification(booking) {
   }
 }
 
+function getApprovedPaidIotBookings(bookings) {
+  return (bookings ?? []).filter(
+    (booking) => getCurrentStatus(booking) === 'approved' && isPaymentComplete(booking) && booking.qrValue,
+  )
+}
+
 function extractBookingId(qrValue) {
   if (!qrValue.includes('|')) {
     return qrValue || ''
@@ -4166,16 +4589,33 @@ function getRejectionReason(booking) {
   return ''
 }
 
+function resolveAppState(state) {
+  const fallbackState = state ?? createInitialState()
+  const users = Array.isArray(fallbackState.users) ? fallbackState.users : []
+  const reviewLogs = normalizeReviewLogs(fallbackState.reviewLogs ?? [])
+  const bookings = (fallbackState.bookings ?? []).map((booking) =>
+    applyAcademicReviewState(booking, users, reviewLogs),
+  )
+
+  return {
+    ...fallbackState,
+    users,
+    reviewLogs,
+    bookings,
+  }
+}
+
 function loadState() {
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY)
     if (!saved) {
-      return createInitialState()
+      return resolveAppState(createInitialState())
     }
 
     const parsed = JSON.parse(saved)
     const defaults = createInitialState()
     const resolvedUsers = mergeStoredUsers(defaults.users, parsed.users)
+    const reviewLogs = normalizeReviewLogs(parsed.reviewLogs ?? [])
     const bookings = (parsed.bookings ?? defaults.bookings).map((booking) => ({
       ...booking,
       requestedDays:
@@ -4215,12 +4655,13 @@ function loadState() {
       wardenClearedBy: booking.wardenClearedBy ?? [],
     }))
 
-    return {
+    return resolveAppState({
       ...defaults,
       ...parsed,
       users: resolvedUsers,
+      reviewLogs,
       bookings,
-      iotLogUrl: parsed.iotLogUrl ?? '',
+      iotLogUrl: resolveIotLogUrl(parsed.iotLogUrl),
       scanLogs:
         parsed.scanLogs?.map((log) => ({
           ...log,
@@ -4230,10 +4671,14 @@ function loadState() {
           message: log.message ?? 'No scan message available.',
           deviceName: log.deviceName ?? 'ESP32-CAM QR Scanner',
         })) ?? createDemoScanLogs(resolvedUsers, bookings),
-    }
+    })
   } catch {
-    return createInitialState()
+    return resolveAppState(createInitialState())
   }
+}
+
+function resolveIotLogUrl(value = '') {
+  return String(value ?? '').trim() || DEFAULT_IOT_LOG_URL
 }
 
 function mergeStoredUsers(defaultUsers, storedUsers) {
@@ -4330,6 +4775,188 @@ function buildLegacySpecialFeedbackEntries(actorUsername, message, providedAt, d
     message,
     providedAt,
   }]
+}
+
+function normalizeReviewLogs(reviewLogs) {
+  const normalizedLogs = Array.isArray(reviewLogs) ? reviewLogs : []
+  const uniqueLogs = new Map()
+
+  normalizedLogs
+    .map((log) => ({
+      bookingId: String(log?.bookingId ?? '').trim(),
+      stage: String(log?.stage ?? '').trim(),
+      action: String(log?.action ?? '').trim(),
+      actorUsername: normalizeAcademicUsername(String(log?.actorUsername ?? '').trim(), ''),
+      decisionReason: String(log?.decisionReason ?? '').trim(),
+      actionAt: log?.actionAt ?? '',
+    }))
+    .filter((log) => log.bookingId && log.stage && log.action && log.actorUsername)
+    .sort((left, right) => new Date(left.actionAt || 0) - new Date(right.actionAt || 0))
+    .forEach((log) => {
+      uniqueLogs.set(createReviewLogKey(log), log)
+    })
+
+  return Array.from(uniqueLogs.values())
+}
+
+function upsertBookingReviewLog(reviewLogs, nextReviewLog) {
+  return normalizeReviewLogs([...(reviewLogs ?? []), nextReviewLog])
+}
+
+function createReviewLogKey(log) {
+  return [log.bookingId, log.stage, log.actorUsername, log.actionAt].join('|')
+}
+
+function applyAcademicReviewState(booking, users, reviewLogs) {
+  if (booking.workflow !== 'regular' || WARDEN_ONLY_WORKFLOWS.includes(booking.workflow)) {
+    return {
+      ...booking,
+      academicReviewTeamUsernames: [],
+      academicPendingReviewerUsernames: [],
+      academicApprovedReviewerUsernames: [],
+      academicRejectedReviewerUsernames: [],
+      academicReviewEntries: [],
+    }
+  }
+
+  const reviewTeam = getRegularAcademicReviewUsers(users, booking)
+  const reviewTeamUsernames = reviewTeam.map((user) => user.username)
+  const latestReviewLogsByActor = buildLatestReviewLogMap(reviewLogs, booking.id, 'academic')
+  const relevantReviewLogs = Array.from(latestReviewLogsByActor.values())
+    .filter((log) => !reviewTeamUsernames.length || reviewTeamUsernames.includes(log.actorUsername))
+    .sort((left, right) => new Date(left.actionAt || 0) - new Date(right.actionAt || 0))
+  const approvedReviewerUsernames = reviewTeamUsernames.filter(
+    (username) => latestReviewLogsByActor.get(username)?.action === 'approved',
+  )
+  const rejectedReviewLogs = relevantReviewLogs.filter((log) => log.action === 'rejected')
+  const rejectedReviewerUsernames = [...new Set(rejectedReviewLogs.map((log) => log.actorUsername))]
+  const pendingReviewerUsernames = reviewTeamUsernames.filter(
+    (username) => !latestReviewLogsByActor.has(username),
+  )
+  const hasAcademicApproval = approvedReviewerUsernames.length > 0
+  const preserveLegacyFinalState =
+    (booking.academicStatus === 'approved' || booking.academicStatus === 'rejected') &&
+    !hasAcademicApproval &&
+    !rejectedReviewerUsernames.length
+
+  if (rejectedReviewerUsernames.length) {
+    const latestRejection = rejectedReviewLogs.at(-1)
+
+    return {
+      ...booking,
+      academicStatus: 'rejected',
+      academicReviewedBy: latestRejection?.actorUsername ?? booking.academicReviewedBy ?? '',
+      academicReviewedAt: latestRejection?.actionAt ?? booking.academicReviewedAt ?? '',
+      academicDecisionReason: latestRejection?.decisionReason || booking.academicDecisionReason || '',
+      academicReviewTeamUsernames: reviewTeamUsernames,
+      academicPendingReviewerUsernames: [],
+      academicApprovedReviewerUsernames: approvedReviewerUsernames,
+      academicRejectedReviewerUsernames: rejectedReviewerUsernames,
+      academicReviewEntries: relevantReviewLogs,
+    }
+  }
+
+  if (hasAcademicApproval) {
+    const latestApproval = relevantReviewLogs.filter((log) => log.action === 'approved').at(-1)
+
+    return {
+      ...booking,
+      academicStatus: 'approved',
+      academicReviewedBy: latestApproval?.actorUsername ?? booking.academicReviewedBy ?? '',
+      academicReviewedAt: latestApproval?.actionAt ?? booking.academicReviewedAt ?? '',
+      academicDecisionReason: '',
+      academicReviewTeamUsernames: reviewTeamUsernames,
+      academicPendingReviewerUsernames: [],
+      academicApprovedReviewerUsernames: approvedReviewerUsernames,
+      academicRejectedReviewerUsernames: [],
+      academicReviewEntries: relevantReviewLogs,
+    }
+  }
+
+  if (preserveLegacyFinalState) {
+    const legacyReviewerUsernames = getLegacyAcademicReviewerUsernames(booking)
+
+    return {
+      ...booking,
+      academicReviewTeamUsernames: reviewTeamUsernames,
+      academicPendingReviewerUsernames: [],
+      academicApprovedReviewerUsernames:
+        booking.academicStatus === 'approved' ? legacyReviewerUsernames : approvedReviewerUsernames,
+      academicRejectedReviewerUsernames:
+        booking.academicStatus === 'rejected' ? legacyReviewerUsernames : [],
+      academicReviewEntries: relevantReviewLogs,
+    }
+  }
+
+  const latestReview = relevantReviewLogs.at(-1)
+
+  return {
+    ...booking,
+    academicStatus: 'pending',
+    academicReviewedBy: latestReview?.actorUsername ?? booking.academicReviewedBy ?? '',
+    academicReviewedAt: latestReview?.actionAt ?? booking.academicReviewedAt ?? '',
+    academicDecisionReason: '',
+    academicReviewTeamUsernames: reviewTeamUsernames,
+    academicPendingReviewerUsernames: pendingReviewerUsernames,
+    academicApprovedReviewerUsernames: approvedReviewerUsernames,
+    academicRejectedReviewerUsernames: [],
+    academicReviewEntries: relevantReviewLogs,
+  }
+}
+
+function buildLatestReviewLogMap(reviewLogs, bookingId, stage) {
+  const latestLogs = new Map()
+
+  ;(reviewLogs ?? [])
+    .filter((log) => log.bookingId === bookingId && log.stage === stage)
+    .sort((left, right) => new Date(left.actionAt || 0) - new Date(right.actionAt || 0))
+    .forEach((log) => {
+      latestLogs.set(log.actorUsername, log)
+    })
+
+  return latestLogs
+}
+
+function getLegacyAcademicReviewerUsernames(booking) {
+  return booking.academicReviewedBy ? [booking.academicReviewedBy] : []
+}
+
+function formatPersonLabelList(people) {
+  const labels = people.map(formatShortPersonLabel).filter(Boolean)
+
+  if (!labels.length) {
+    return 'N/A'
+  }
+
+  if (labels.length === 1) {
+    return labels[0]
+  }
+
+  if (labels.length === 2) {
+    return `${labels[0]} and ${labels[1]}`
+  }
+
+  return `${labels.slice(0, -1).join(', ')}, and ${labels.at(-1)}`
+}
+
+function formatShortPersonLabel(person) {
+  if (!person) {
+    return ''
+  }
+
+  if (isStudentCounselor(person)) {
+    return 'Student counselor'
+  }
+
+  if (person.roleLabel === 'Head of Department (HOD)' && person.department) {
+    return `HOD (${person.department})`
+  }
+
+  if (person.roleLabel === 'Academic coordinator' && person.department) {
+    return `Academic coordinator (${person.department})`
+  }
+
+  return person.name || person.roleLabel || ''
 }
 
 function safeJsonParse(value, fallback) {

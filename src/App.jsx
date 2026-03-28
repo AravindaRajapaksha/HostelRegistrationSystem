@@ -31,6 +31,7 @@ import {
   addScanLogs,
   ensureBookingStorageReady,
   loadSupabaseAppState,
+  resetWorkflowData,
   saveBooking,
   saveBookings,
   saveUserProfile,
@@ -358,7 +359,7 @@ function App() {
       password: existingStudent?.password ?? studentUsername,
       roleGroup: 'student',
       roleLabel: 'Student',
-      department: '',
+      department: String(formValues.department ?? '').trim() || existingStudent?.department || '',
       managedGender: '',
       gender: normalizedGender,
       name: normalizedName,
@@ -1048,6 +1049,33 @@ function App() {
     }
   }
 
+  async function resetAllWorkflowData() {
+    if (!currentUser || currentUser.roleGroup !== 'warden' || currentUser.roleLabel !== 'Warden') {
+      setFeedback('Only the main warden can reset the booking workflow data.')
+      return false
+    }
+
+    try {
+      if (usingSupabase) {
+        await resetWorkflowData()
+      }
+    } catch (error) {
+      setFeedback(error.message)
+      return false
+    }
+
+    setAppState((previous) => ({
+      ...previous,
+      bookings: [],
+      scanLogs: [],
+    }))
+    setFeedback(
+      'Booking requests, approval history, clearance history, and QR scan logs were reset. Student profiles and master tables were kept.',
+    )
+    setActiveView('home')
+    return true
+  }
+
   if (!currentUser) {
     return (
       <LoginScreen
@@ -1086,6 +1114,7 @@ function App() {
         onClearWardenBooking: clearWardenBookingHistory,
         onPayBooking: payBooking,
         onRecordEmergencyPayment: recordEmergencyPayment,
+        onResetWorkflowData: resetAllWorkflowData,
         onSubmitBooking: submitBooking,
         onSyncIotLog: syncIotLogFromUrl,
         onUpdateIotLogUrl: updateIotLogUrl,
@@ -1108,6 +1137,7 @@ function renderView({
   onClearWardenBooking,
   onPayBooking,
   onRecordEmergencyPayment,
+  onResetWorkflowData,
   onSubmitBooking,
   onSyncIotLog,
   onUpdateIotLogUrl,
@@ -1150,7 +1180,7 @@ function renderView({
       )
     }
 
-    return <HomeView currentUser={currentUser} users={appState.users} />
+    return <HomeView currentUser={currentUser} onResetWorkflowData={onResetWorkflowData} users={appState.users} />
   }
 
   if (currentUser.roleGroup === 'academic') {
@@ -1203,7 +1233,7 @@ function renderView({
       )
     }
 
-    return <HomeView currentUser={currentUser} users={appState.users} />
+    return <HomeView currentUser={currentUser} onResetWorkflowData={onResetWorkflowData} users={appState.users} />
   }
 
   const relevant = appState.bookings
@@ -1297,7 +1327,7 @@ function renderView({
     )
   }
 
-  return <HomeView currentUser={currentUser} users={appState.users} />
+  return <HomeView currentUser={currentUser} onResetWorkflowData={onResetWorkflowData} users={appState.users} />
 }
 
 function LoginScreen({ users, onLogin }) {
@@ -1507,11 +1537,30 @@ function PortalShell({
   )
 }
 
-function HomeView({ currentUser, users }) {
+function HomeView({ currentUser, onResetWorkflowData, users }) {
   const warden = users.find((user) => user.username === 'warden')
   const subMale = users.find((user) => user.username === 'submale')
   const subFemale = users.find((user) => user.username === 'subfemale')
   const counselor = users.find((user) => isStudentCounselor(user))
+  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false)
+  const [isResettingData, setIsResettingData] = useState(false)
+
+  async function handleResetWorkflowData() {
+    if (!onResetWorkflowData) {
+      return
+    }
+
+    setIsResettingData(true)
+
+    try {
+      const didReset = await onResetWorkflowData()
+      if (didReset) {
+        setIsResetConfirmOpen(false)
+      }
+    } finally {
+      setIsResettingData(false)
+    }
+  }
 
   if (currentUser.roleGroup === 'student') {
     return (
@@ -1610,6 +1659,53 @@ function HomeView({ currentUser, users }) {
           </div>
         </article>
       </section>
+
+      {currentUser.roleLabel === 'Warden' ? (
+        <article className="panel-card danger-panel">
+          <div className="section-heading">
+            <div>
+              <div className="eyebrow">Database Reset</div>
+              <h3>Reset booking workflow data</h3>
+              <p className="danger-copy">
+                This clears `booking_requests`, approval history, clearance history, and `qr_scan_logs`.
+                Student profiles, rooms, departments, and hostel settings stay in the database.
+              </p>
+            </div>
+          </div>
+
+          {isResetConfirmOpen ? (
+            <div className="danger-actions">
+              <p className="danger-copy">
+                Confirm reset? This will remove all booking requests and QR confirmation history from the website and database.
+              </p>
+              <div className="button-row">
+                <button
+                  className="danger-button"
+                  disabled={isResettingData}
+                  onClick={handleResetWorkflowData}
+                  type="button"
+                >
+                  {isResettingData ? 'Resetting...' : 'Confirm reset'}
+                </button>
+                <button
+                  className="ghost-button"
+                  disabled={isResettingData}
+                  onClick={() => setIsResetConfirmOpen(false)}
+                  type="button"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="button-row">
+              <button className="ghost-button" onClick={() => setIsResetConfirmOpen(true)} type="button">
+                Reset booking requests and logs
+              </button>
+            </div>
+          )}
+        </article>
+      ) : null}
     </div>
   )
 }

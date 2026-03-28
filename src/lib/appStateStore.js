@@ -169,6 +169,22 @@ export async function addScanLogs(scanLogs) {
   throwOnResultError(result, 'save scan logs')
 }
 
+export async function resetWorkflowData() {
+  const supabase = requireSupabase()
+
+  const scanLogDeleteResult = await supabase
+    .from('qr_scan_logs')
+    .delete()
+    .not('id', 'is', null)
+  throwOnResultError(scanLogDeleteResult, 'reset QR scan logs')
+
+  const bookingDeleteResult = await supabase
+    .from('booking_requests')
+    .delete()
+    .not('id', 'is', null)
+  throwOnResultError(bookingDeleteResult, 'reset booking requests')
+}
+
 const PROFILE_COLUMNS = [
   'username',
   'role_group',

@@ -111,10 +111,16 @@ create table if not exists public.booking_requests (
   warden_status public.approval_status not null default 'pending',
   warden_reviewed_by citext references public.profiles (username) on delete set null,
   warden_reviewed_at timestamptz,
+  special_feedback_recipient_username citext references public.profiles (username) on delete set null,
+  special_feedback_requested_by citext references public.profiles (username) on delete set null,
+  special_feedback_requested_at timestamptz,
   department_code text references public.departments (code) on delete set null,
   course_code text,
   academic_activity text,
   special_reason text,
+  special_feedback_message text,
+  special_feedback_provided_by citext references public.profiles (username) on delete set null,
+  special_feedback_provided_at timestamptz,
   home_phone text,
   mobile_phone text,
   payment_total numeric(10, 2),
@@ -131,6 +137,14 @@ create table if not exists public.booking_requests (
     workflow <> 'special' or length(trim(coalesce(special_reason, ''))) > 0
   )
 );
+
+alter table public.booking_requests
+  add column if not exists special_feedback_recipient_username citext references public.profiles (username) on delete set null,
+  add column if not exists special_feedback_requested_by citext references public.profiles (username) on delete set null,
+  add column if not exists special_feedback_requested_at timestamptz,
+  add column if not exists special_feedback_message text,
+  add column if not exists special_feedback_provided_by citext references public.profiles (username) on delete set null,
+  add column if not exists special_feedback_provided_at timestamptz;
 
 create table if not exists public.booking_review_logs (
   id uuid primary key default gen_random_uuid(),
@@ -199,6 +213,7 @@ create index if not exists idx_profiles_department_code on public.profiles (depa
 create index if not exists idx_booking_requests_student_username on public.booking_requests (student_username);
 create index if not exists idx_booking_requests_statuses on public.booking_requests (academic_status, warden_status, payment_status);
 create index if not exists idx_booking_requests_room_dates on public.booking_requests (room_number, bed_number, check_in, check_out);
+create index if not exists idx_booking_requests_special_feedback_recipient on public.booking_requests (special_feedback_recipient_username);
 create unique index if not exists uq_booking_review_logs_action on public.booking_review_logs (booking_id, stage, actor_username, action_at);
 create index if not exists idx_qr_scan_logs_scanned_at on public.qr_scan_logs (scanned_at desc);
 create index if not exists idx_qr_scan_logs_booking_id on public.qr_scan_logs (booking_id);

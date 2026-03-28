@@ -158,20 +158,16 @@ function App() {
       return
     }
 
-    if (!formValues.department) {
+    if (formValues.workflow === 'regular' && !formValues.department) {
       setFeedback(
-        formValues.workflow === 'regular'
-          ? 'Select the department for the academic TRF booking request.'
-          : 'Select the department before submitting the special reason TRF booking request.',
+        'Select the department for the academic TRF booking request.',
       )
       return
     }
 
-    if (!selectedSubjects.length) {
+    if (formValues.workflow === 'regular' && !selectedSubjects.length) {
       setFeedback(
-        formValues.workflow === 'regular'
-          ? 'Select the subject code before submitting the academic TRF booking request.'
-          : 'Select the subject code before submitting the special reason TRF booking request.',
+        'Select the subject code before submitting the academic TRF booking request.',
       )
       return
     }
@@ -246,6 +242,12 @@ function App() {
       courseCode: selectedSubjects.join(', '),
       academicActivity: formValues.workflow === 'regular' ? formValues.academicActivity : '',
       specialReason: formValues.workflow === 'special' ? formValues.specialReason : '',
+      specialFeedbackRecipientUsername: '',
+      specialFeedbackRequestedBy: '',
+      specialFeedbackRequestedAt: '',
+      specialFeedbackMessage: '',
+      specialFeedbackProvidedBy: '',
+      specialFeedbackProvidedAt: '',
       homePhone: formValues.homePhone,
       mobilePhone: formValues.mobilePhone,
       paymentTotal: calculatePaymentTotal(requestedDays),
@@ -337,7 +339,56 @@ function App() {
     )
   }
 
-  async function decideWarden(bookingId, decision, reason = '') {
+  async function submitSpecialFeedback(bookingId, message) {
+    if (!currentUser || currentUser.roleGroup !== 'academic') {
+      return
+    }
+
+    const targetBooking = appState.bookings.find((booking) => booking.id === bookingId)
+
+    if (!targetBooking || !canAcademicUserProvideSpecialFeedback(currentUser, targetBooking)) {
+      setFeedback('This special reason feedback request is not assigned to your account.')
+      return
+    }
+
+    const trimmedMessage = message.trim()
+
+    if (!trimmedMessage) {
+      setFeedback('Enter the feedback before sending it to the warden.')
+      return
+    }
+
+    const updatedBooking = {
+      ...targetBooking,
+      specialFeedbackMessage: trimmedMessage,
+      specialFeedbackProvidedBy: currentUser.username,
+      specialFeedbackProvidedAt: new Date().toISOString(),
+    }
+
+    try {
+      if (usingSupabase) {
+        await saveBooking(updatedBooking)
+      }
+    } catch (error) {
+      setFeedback(error.message)
+      return
+    }
+
+    setAppState((previous) => ({
+      ...previous,
+      bookings: previous.bookings.map((booking) => {
+        if (booking.id !== bookingId) {
+          return booking
+        }
+
+        return updatedBooking
+      }),
+    }))
+
+    setFeedback(`Feedback for ${bookingId} was sent to the warden.`)
+  }
+
+  async function decideWarden(bookingId, decision, reason = '', specialFeedbackRecipientUsername = '') {
     if (!currentUser || currentUser.roleGroup !== 'warden') {
       return
     }
@@ -355,17 +406,56 @@ function App() {
       return
     }
 
+    const trimmedFeedbackRecipient = specialFeedbackRecipientUsername.trim()
+
+    if (decision === 'approved' && targetBooking.workflow === 'special') {
+      if (!trimmedFeedbackRecipient) {
+        setFeedback('Select the academic staff member who should send feedback on this special reason booking.')
+        return
+      }
+
+      const recipientIsValid = getSpecialFeedbackCandidateUsers(appState.users, targetBooking).some(
+        (user) => user.username === trimmedFeedbackRecipient,
+      )
+
+      if (!recipientIsValid) {
+        setFeedback('Select a valid academic staff member for the special reason feedback request.')
+        return
+      }
+    }
+
     const reviewedAt = new Date().toISOString()
     const autoRejectReason =
       'Automatically not approved because another overlapping request for this room and bed was approved first.'
     const updatedBookings = appState.bookings.map((booking) => {
       if (booking.id === bookingId) {
+        const assignSpecialFeedback = targetBooking.workflow === 'special' && decision === 'approved'
+        const clearSpecialFeedback = targetBooking.workflow === 'special' && decision === 'rejected'
+
         return {
           ...booking,
           wardenStatus: decision,
           wardenReviewedBy: currentUser.username,
           wardenReviewedAt: reviewedAt,
           wardenDecisionReason: decision === 'rejected' ? reason.trim() : '',
+          specialFeedbackRecipientUsername: assignSpecialFeedback
+            ? trimmedFeedbackRecipient
+            : clearSpecialFeedback
+              ? ''
+              : booking.specialFeedbackRecipientUsername ?? '',
+          specialFeedbackRequestedBy: assignSpecialFeedback
+            ? currentUser.username
+            : clearSpecialFeedback
+              ? ''
+              : booking.specialFeedbackRequestedBy ?? '',
+          specialFeedbackRequestedAt: assignSpecialFeedback
+            ? reviewedAt
+            : clearSpecialFeedback
+              ? ''
+              : booking.specialFeedbackRequestedAt ?? '',
+          specialFeedbackMessage: assignSpecialFeedback || clearSpecialFeedback ? '' : booking.specialFeedbackMessage ?? '',
+          specialFeedbackProvidedBy: assignSpecialFeedback || clearSpecialFeedback ? '' : booking.specialFeedbackProvidedBy ?? '',
+          specialFeedbackProvidedAt: assignSpecialFeedback || clearSpecialFeedback ? '' : booking.specialFeedbackProvidedAt ?? '',
         }
       }
 
@@ -429,9 +519,15 @@ function App() {
       }),
     }))
 
+    const selectedFeedbackRecipient = appState.users.find(
+      (user) => user.username === trimmedFeedbackRecipient,
+    )
+
     setFeedback(
       decision === 'approved'
-        ? `Warden approval recorded for ${bookingId}. Availability was updated for overlapping requests.`
+        ? targetBooking.workflow === 'special'
+          ? `Warden approval recorded for ${bookingId}. ${selectedFeedbackRecipient?.name ?? 'The selected academic staff member'} can now send feedback back to the warden.`
+          : `Warden approval recorded for ${bookingId}. Availability was updated for overlapping requests.`
         : `Warden rejection recorded for ${bookingId} with the not-approved reason.`,
     )
   }
@@ -769,6 +865,7 @@ function App() {
         appState,
         currentUser,
         onAcademicDecision: decideAcademic,
+        onAcademicSpecialFeedback: submitSpecialFeedback,
         onCancelBooking: cancelBooking,
         onClearAcademicBooking: clearAcademicBookingHistory,
         onClearStudentBooking: clearStudentBookingHistory,
@@ -788,6 +885,7 @@ function renderView({
   appState,
   currentUser,
   onAcademicDecision,
+  onAcademicSpecialFeedback,
   onCancelBooking,
   onClearAcademicBooking,
   onClearStudentBooking,
@@ -826,6 +924,7 @@ function renderView({
       return (
         <StudentBookingsView
           bookings={studentBookings}
+          currentUser={currentUser}
           onCancel={onCancelBooking}
           onClear={onClearStudentBooking}
           onPay={onPayBooking}
@@ -843,12 +942,18 @@ function renderView({
       .filter((booking) => !booking.cancelledAt)
       .filter((booking) => canAcademicUserReviewBooking(currentUser, booking))
       .sort(sortRecentFirst)
+    const feedbackRelevant = appState.bookings
+      .filter((booking) => !booking.cancelledAt)
+      .filter((booking) => canAcademicUserProvideSpecialFeedback(currentUser, booking))
+      .sort(sortRecentFirst)
 
     if (activeView === 'dashboard') {
       return (
         <AcademicDashboardView
-          bookings={relevant.filter((booking) => booking.academicStatus === 'pending')}
+          approvalBookings={relevant.filter((booking) => booking.academicStatus === 'pending')}
           currentUser={currentUser}
+          feedbackBookings={feedbackRelevant.filter((booking) => !booking.specialFeedbackProvidedAt)}
+          onSubmitFeedback={onAcademicSpecialFeedback}
           users={appState.users}
           onDecision={onAcademicDecision}
         />
@@ -1522,7 +1627,7 @@ function StudentBookingForm({ bookings, student, onSubmit }) {
         ) : (
           <div className="form-grid">
             <SelectField
-              label="Department"
+              label="Department (optional)"
               name="department"
               value={form.department}
               onChange={(value) => setForm((previous) => ({ ...previous, department: value }))}
@@ -1535,7 +1640,7 @@ function StudentBookingForm({ bookings, student, onSubmit }) {
               ]}
             />
             <SelectField
-              label="Subject course code"
+              label="Subject course code (optional)"
               name="courseCode"
               value={selectedSubject}
               onChange={(value) =>
@@ -1571,7 +1676,7 @@ function StudentBookingForm({ bookings, student, onSubmit }) {
   )
 }
 
-function StudentBookingsView({ bookings, onCancel, onClear, onPay, users }) {
+function StudentBookingsView({ bookings, currentUser, onCancel, onClear, onPay, users }) {
   const visibleBookings = bookings.filter((booking) => {
     const status = getCurrentStatus(booking)
     return (
@@ -1645,6 +1750,7 @@ function StudentBookingsView({ bookings, onCancel, onClear, onPay, users }) {
                 action={action}
                 booking={booking}
                 collapsible
+                currentUser={currentUser}
                 key={booking.id}
                 showQr={status === 'approved' && paid}
                 users={users}
@@ -1659,22 +1765,37 @@ function StudentBookingsView({ bookings, onCancel, onClear, onPay, users }) {
   )
 }
 
-function AcademicDashboardView({ bookings, currentUser, onDecision, users }) {
+function AcademicDashboardView({
+  approvalBookings,
+  currentUser,
+  feedbackBookings,
+  onDecision,
+  onSubmitFeedback,
+  users,
+}) {
   const [query, setQuery] = useState('')
-  const filtered = filterBookings(bookings, users, query)
+  const filteredApprovals = filterBookings(approvalBookings, users, query)
 
   return (
-    <ApprovalQueue
-      bookings={filtered}
-      currentUser={currentUser}
-      onApprove={(id) => onDecision(id, 'approved')}
-      onReject={(id, reason) => onDecision(id, 'rejected', reason)}
-      query={query}
-      searchLabel="Search pending requests"
-      setQuery={setQuery}
-      title="Academic Notifications"
-      users={users}
-    />
+    <div className="stacked-layout">
+      <ApprovalQueue
+        bookings={filteredApprovals}
+        currentUser={currentUser}
+        onApprove={(booking) => onDecision(booking.id, 'approved')}
+        onReject={(id, reason) => onDecision(id, 'rejected', reason)}
+        query={query}
+        searchLabel="Search pending requests"
+        setQuery={setQuery}
+        title="Academic Notifications"
+        users={users}
+      />
+      <SpecialFeedbackQueue
+        bookings={feedbackBookings}
+        currentUser={currentUser}
+        onSubmitFeedback={onSubmitFeedback}
+        users={users}
+      />
+    </div>
   )
 }
 
@@ -1683,10 +1804,11 @@ function WardenDashboardView({ bookings, currentUser, onDecision, title = 'Warde
   const filtered = filterBookings(bookings, users, query)
 
   return (
-    <ApprovalQueue
+    <WardenApprovalQueue
       bookings={filtered}
       currentUser={currentUser}
-      onApprove={(id) => onDecision(id, 'approved')}
+      onApprove={(id, specialFeedbackRecipientUsername = '') =>
+        onDecision(id, 'approved', '', specialFeedbackRecipientUsername)}
       onReject={(id, reason) => onDecision(id, 'rejected', reason)}
       query={query}
       searchLabel="Search student details"
@@ -1756,7 +1878,7 @@ function ApprovalQueue({
             <BookingCard
               action={
                 <div className="button-row">
-                  <button className="primary-button" onClick={() => onApprove(booking.id)} type="button">
+                  <button className="primary-button" onClick={() => onApprove(booking)} type="button">
                     Approve
                   </button>
                   <button className="ghost-button" onClick={() => openRejectDialog(booking)} type="button">
@@ -1766,6 +1888,7 @@ function ApprovalQueue({
               }
               booking={booking}
               collapsible
+              currentUser={currentUser}
               key={booking.id}
               users={users}
             />
@@ -1774,6 +1897,333 @@ function ApprovalQueue({
       ) : (
         <EmptyState copy="No matching notifications are waiting right now." />
       )}
+
+      {rejectTarget ? (
+        <div className="modal-backdrop" onClick={closeRejectDialog} role="presentation">
+          <div
+            aria-labelledby={`reject-modal-${rejectTarget.id}`}
+            aria-modal="true"
+            className="modal-card rejection-modal-card"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <div className="modal-header">
+              <div>
+                <div className="eyebrow">Not-Approve Reason</div>
+                <h3 id={`reject-modal-${rejectTarget.id}`}>Add the reason for {rejectTarget.id}</h3>
+              </div>
+              <button className="ghost-button" onClick={closeRejectDialog} type="button">
+                Close
+              </button>
+            </div>
+            <label className="field full-span">
+              <span>Reason for not approving this request</span>
+              <textarea
+                autoFocus
+                onChange={(event) => setRejectReason(event.target.value)}
+                placeholder="Type the reason that should be visible to the student and staff reviewers."
+                rows="5"
+                value={rejectReason}
+              />
+            </label>
+            <div className="button-row">
+              <button
+                className="primary-button"
+                disabled={!rejectReason.trim()}
+                onClick={submitRejectReason}
+                type="button"
+              >
+                Save reason and not approve
+              </button>
+              <button className="ghost-button" onClick={closeRejectDialog} type="button">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function SpecialFeedbackQueue({ bookings, currentUser, onSubmitFeedback, users }) {
+  const [query, setQuery] = useState('')
+  const [feedbackTarget, setFeedbackTarget] = useState(null)
+  const [feedbackMessage, setFeedbackMessage] = useState('')
+  const filtered = filterBookings(bookings, users, query)
+
+  function openFeedbackDialog(booking) {
+    setFeedbackTarget(booking)
+    setFeedbackMessage(booking.specialFeedbackMessage ?? '')
+  }
+
+  function closeFeedbackDialog() {
+    setFeedbackTarget(null)
+    setFeedbackMessage('')
+  }
+
+  function submitFeedback() {
+    const message = feedbackMessage.trim()
+
+    if (!feedbackTarget || !message) {
+      return
+    }
+
+    onSubmitFeedback(feedbackTarget.id, message)
+    closeFeedbackDialog()
+  }
+
+  return (
+    <section className="panel-card">
+      <div className="section-heading">
+        <div>
+          <div className="eyebrow">{currentUser.roleLabel}</div>
+          <h2>Special Feedback Requests</h2>
+        </div>
+        <label className="search-field">
+          <span>Search feedback requests</span>
+          <input
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search by student, booking id, or special reason"
+            type="search"
+            value={query}
+          />
+        </label>
+      </div>
+
+      {filtered.length ? (
+        <div className="card-list">
+          {filtered.map((booking) => (
+            <BookingCard
+              action={
+                <div className="button-row">
+                  <button className="primary-button" onClick={() => openFeedbackDialog(booking)} type="button">
+                    Send feedback
+                  </button>
+                </div>
+              }
+              booking={booking}
+              collapsible
+              currentUser={currentUser}
+              key={booking.id}
+              users={users}
+            />
+          ))}
+        </div>
+      ) : (
+        <EmptyState copy="No special feedback requests are assigned to you right now." />
+      )}
+
+      {feedbackTarget ? (
+        <div className="modal-backdrop" onClick={closeFeedbackDialog} role="presentation">
+          <div
+            aria-labelledby={`special-feedback-modal-${feedbackTarget.id}`}
+            aria-modal="true"
+            className="modal-card rejection-modal-card"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <div className="modal-header">
+              <div>
+                <div className="eyebrow">Special Feedback</div>
+                <h3 id={`special-feedback-modal-${feedbackTarget.id}`}>
+                  Send feedback for {feedbackTarget.id}
+                </h3>
+              </div>
+              <button className="ghost-button" onClick={closeFeedbackDialog} type="button">
+                Close
+              </button>
+            </div>
+            <label className="field full-span">
+              <span>Feedback for the warden</span>
+              <textarea
+                autoFocus
+                onChange={(event) => setFeedbackMessage(event.target.value)}
+                placeholder="Type the feedback that should be visible to the warden."
+                rows="5"
+                value={feedbackMessage}
+              />
+            </label>
+            <div className="button-row">
+              <button
+                className="primary-button"
+                disabled={!feedbackMessage.trim()}
+                onClick={submitFeedback}
+                type="button"
+              >
+                Send feedback
+              </button>
+              <button className="ghost-button" onClick={closeFeedbackDialog} type="button">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function WardenApprovalQueue({
+  bookings,
+  currentUser,
+  onApprove,
+  onReject,
+  query,
+  searchLabel,
+  setQuery,
+  title,
+  users,
+}) {
+  const [rejectTarget, setRejectTarget] = useState(null)
+  const [rejectReason, setRejectReason] = useState('')
+  const [approveTarget, setApproveTarget] = useState(null)
+  const [selectedFeedbackRecipient, setSelectedFeedbackRecipient] = useState('')
+  const approveCandidates = approveTarget ? getSpecialFeedbackCandidateUsers(users, approveTarget) : []
+
+  function openRejectDialog(booking) {
+    setRejectTarget(booking)
+    setRejectReason('')
+  }
+
+  function closeRejectDialog() {
+    setRejectTarget(null)
+    setRejectReason('')
+  }
+
+  function submitRejectReason() {
+    const reason = rejectReason.trim()
+
+    if (!rejectTarget || !reason) {
+      return
+    }
+
+    onReject(rejectTarget.id, reason)
+    closeRejectDialog()
+  }
+
+  function approveBooking(booking) {
+    if (booking.workflow !== 'special') {
+      onApprove(booking.id)
+      return
+    }
+
+    const candidateUsers = getSpecialFeedbackCandidateUsers(users, booking)
+    const defaultRecipient =
+      candidateUsers.find((user) => user.username === booking.specialFeedbackRecipientUsername)?.username ??
+      candidateUsers[0]?.username ??
+      ''
+
+    setApproveTarget(booking)
+    setSelectedFeedbackRecipient(defaultRecipient)
+  }
+
+  function closeApproveDialog() {
+    setApproveTarget(null)
+    setSelectedFeedbackRecipient('')
+  }
+
+  function submitApproval() {
+    if (!approveTarget || !selectedFeedbackRecipient) {
+      return
+    }
+
+    onApprove(approveTarget.id, selectedFeedbackRecipient)
+    closeApproveDialog()
+  }
+
+  return (
+    <section className="panel-card">
+      <div className="section-heading">
+        <div>
+          <div className="eyebrow">{currentUser.roleLabel}</div>
+          <h2>{title}</h2>
+        </div>
+        <label className="search-field">
+          <span>{searchLabel}</span>
+          <input
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search by name, room, course, or booking id"
+            type="search"
+            value={query}
+          />
+        </label>
+      </div>
+
+      {bookings.length ? (
+        <div className="card-list">
+          {bookings.map((booking) => (
+            <BookingCard
+              action={
+                <div className="button-row">
+                  <button className="primary-button" onClick={() => approveBooking(booking)} type="button">
+                    Approve
+                  </button>
+                  <button className="ghost-button" onClick={() => openRejectDialog(booking)} type="button">
+                    Not approve
+                  </button>
+                </div>
+              }
+              booking={booking}
+              collapsible
+              currentUser={currentUser}
+              key={booking.id}
+              users={users}
+            />
+          ))}
+        </div>
+      ) : (
+        <EmptyState copy="No matching notifications are waiting right now." />
+      )}
+
+      {approveTarget ? (
+        <div className="modal-backdrop" onClick={closeApproveDialog} role="presentation">
+          <div
+            aria-labelledby={`approve-modal-${approveTarget.id}`}
+            aria-modal="true"
+            className="modal-card rejection-modal-card"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <div className="modal-header">
+              <div>
+                <div className="eyebrow">Special Booking Approval</div>
+                <h3 id={`approve-modal-${approveTarget.id}`}>Select feedback contact for {approveTarget.id}</h3>
+              </div>
+              <button className="ghost-button" onClick={closeApproveDialog} type="button">
+                Close
+              </button>
+            </div>
+            <label className="field full-span">
+              <span>Academic staff member who should send feedback to the warden</span>
+              <select
+                onChange={(event) => setSelectedFeedbackRecipient(event.target.value)}
+                value={selectedFeedbackRecipient}
+              >
+                <option value="">Select academic staff member</option>
+                {approveCandidates.map((person) => (
+                  <option key={person.username} value={person.username}>
+                    {`${person.roleLabel} - ${person.name}${person.department ? ` (${person.department})` : ''}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="button-row">
+              <button
+                className="primary-button"
+                disabled={!selectedFeedbackRecipient}
+                onClick={submitApproval}
+                type="button"
+              >
+                Approve and send
+              </button>
+              <button className="ghost-button" onClick={closeApproveDialog} type="button">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {rejectTarget ? (
         <div className="modal-backdrop" onClick={closeRejectDialog} role="presentation">
@@ -1864,6 +2314,7 @@ function DecisionListView({ bookings, currentUser, emptyCopy, onClear = null, sh
               }
               booking={booking}
               collapsible
+              currentUser={currentUser}
               key={booking.id}
               showQr={showQr}
               users={users}
@@ -1877,11 +2328,21 @@ function DecisionListView({ bookings, currentUser, emptyCopy, onClear = null, sh
   )
 }
 
-function BookingCard({ action = null, booking, collapsible = false, showQr = false, users }) {
+function BookingCard({ action = null, booking, collapsible = false, currentUser = null, showQr = false, users }) {
   const student = users.find((user) => user.username === booking.studentUsername)
   const academicReviewer = users.find((user) => user.username === booking.academicReviewedBy)
   const wardenReviewer = users.find((user) => user.username === booking.wardenReviewedBy)
   const academicApproverUsers = getAcademicApproverUsers(users, booking)
+  const specialFeedbackRecipient = users.find(
+    (user) => user.username === booking.specialFeedbackRecipientUsername,
+  )
+  const specialFeedbackRequestedBy = users.find(
+    (user) => user.username === booking.specialFeedbackRequestedBy,
+  )
+  const specialFeedbackProvidedBy = users.find(
+    (user) => user.username === booking.specialFeedbackProvidedBy,
+  )
+  const specialFeedbackContactUsers = getSpecialFeedbackContactUsers(users, booking)
   const wardenApproverUsers = getWardenApproverUsers(users, booking)
   const [isExpanded, setIsExpanded] = useState(!collapsible)
   const [isStaffModalOpen, setIsStaffModalOpen] = useState(false)
@@ -1890,7 +2351,42 @@ function BookingCard({ action = null, booking, collapsible = false, showQr = fal
   const canShowQr = showQr && isPaymentComplete(booking)
   const status = getCurrentStatus(booking)
   const isWardenOnlyBooking = WARDEN_ONLY_WORKFLOWS.includes(booking.workflow)
+  const canViewSpecialFeedback = canViewerSeeSpecialFeedback(currentUser, booking)
   const rejectionReason = getRejectionReason(booking)
+  const specialFeedbackDetails =
+    canViewSpecialFeedback &&
+    booking.workflow === 'special' &&
+    (booking.wardenStatus === 'approved' || booking.specialFeedbackRequestedAt || booking.specialFeedbackProvidedAt)
+      ? [
+          [
+            'Selected academic contact',
+            specialFeedbackRecipient
+              ? `${specialFeedbackRecipient.roleLabel} - ${specialFeedbackRecipient.name}`
+              : 'Not selected yet',
+          ],
+          [
+            'Feedback requested by',
+            specialFeedbackRequestedBy
+              ? `${specialFeedbackRequestedBy.roleLabel} - ${specialFeedbackRequestedBy.name}`
+              : 'Pending',
+          ],
+          [
+            'Feedback request date',
+            booking.specialFeedbackRequestedAt ? formatDate(booking.specialFeedbackRequestedAt) : 'Pending',
+          ],
+          [
+            'Feedback sent by',
+            specialFeedbackProvidedBy
+              ? `${specialFeedbackProvidedBy.roleLabel} - ${specialFeedbackProvidedBy.name}`
+              : 'Pending',
+          ],
+          [
+            'Feedback sent date',
+            booking.specialFeedbackProvidedAt ? formatDate(booking.specialFeedbackProvidedAt) : 'Pending',
+          ],
+          ['Feedback for warden', booking.specialFeedbackMessage || 'Pending'],
+        ]
+      : []
   const summaryLabel =
     status === 'not approved'
       ? 'Request not approved'
@@ -2007,6 +2503,7 @@ function BookingCard({ action = null, booking, collapsible = false, showQr = fal
                   'Warden review date',
                   booking.wardenReviewedAt ? formatDate(booking.wardenReviewedAt) : 'Pending',
                 ],
+                ...specialFeedbackDetails,
                 ...(rejectionReason ? [['Not-approved reason', rejectionReason]] : []),
                 ['Payment completed on', booking.paymentPaidAt ? formatDate(booking.paymentPaidAt) : 'Pending'],
                 [
@@ -2048,14 +2545,16 @@ function BookingCard({ action = null, booking, collapsible = false, showQr = fal
                     Close
                   </button>
                 </div>
-                <div className={isWardenOnlyBooking ? 'modal-grid single-column' : 'modal-grid'}>
-                  {isWardenOnlyBooking ? null : (
-                    <StaffContactGroup
-                      emptyCopy="No academic approvers assigned."
-                      people={academicApproverUsers}
-                      title="Academic approver details"
-                    />
-                  )}
+                <div className="modal-grid">
+                  <StaffContactGroup
+                    emptyCopy={
+                      isWardenOnlyBooking
+                        ? 'No academic feedback contact has been selected yet.'
+                        : 'No academic approvers assigned.'
+                    }
+                    people={isWardenOnlyBooking ? specialFeedbackContactUsers : academicApproverUsers}
+                    title={isWardenOnlyBooking ? 'Academic feedback contact' : 'Academic approver details'}
+                  />
                   <StaffContactGroup
                     emptyCopy="No warden approvers assigned."
                     people={wardenApproverUsers}
@@ -2514,6 +3013,23 @@ function canAcademicUserReviewBooking(user, booking) {
   return isStudentCounselor(user) || user.department === booking.department
 }
 
+function canAcademicUserProvideSpecialFeedback(user, booking) {
+  return (
+    user.roleGroup === 'academic' &&
+    booking.workflow === 'special' &&
+    booking.wardenStatus === 'approved' &&
+    booking.specialFeedbackRecipientUsername === user.username
+  )
+}
+
+function canViewerSeeSpecialFeedback(currentUser, booking) {
+  if (!currentUser || booking.workflow !== 'special') {
+    return false
+  }
+
+  return currentUser.roleGroup === 'warden' || booking.specialFeedbackRecipientUsername === currentUser.username
+}
+
 function isStudentCounselor(user) {
   return user?.roleGroup === 'academic' && user.roleLabel === 'Student counselor'
 }
@@ -2534,6 +3050,36 @@ function getAcademicApproverUsers(users, booking) {
       user.roleGroup === 'academic' &&
       (user.department === booking.department || isStudentCounselor(user)),
   )
+}
+
+function getSpecialFeedbackCandidateUsers(users, booking) {
+  const relevantUsers = users.filter((user) => user.roleGroup === 'academic').filter((user) => {
+    if (!booking.department) {
+      return true
+    }
+
+    return user.department === booking.department || isStudentCounselor(user)
+  })
+
+  const rolePriority = {
+    'Head of Department (HOD)': 0,
+    'Academic coordinator': 1,
+    'Student counselor': 2,
+  }
+
+  return [...relevantUsers].sort((left, right) => {
+    const priorityDifference = (rolePriority[left.roleLabel] ?? 99) - (rolePriority[right.roleLabel] ?? 99)
+
+    if (priorityDifference !== 0) {
+      return priorityDifference
+    }
+
+    return left.name.localeCompare(right.name)
+  })
+}
+
+function getSpecialFeedbackContactUsers(users, booking) {
+  return users.filter((user) => user.username === booking.specialFeedbackRecipientUsername)
 }
 
 function getWardenApproverUsers(users, booking) {
@@ -2735,6 +3281,7 @@ function filterBookings(bookings, users, query) {
       booking.courseCode,
       booking.academicActivity,
       booking.specialReason,
+      booking.specialFeedbackMessage,
       booking.academicDecisionReason,
       booking.wardenDecisionReason,
       `room ${booking.roomNumber}`,
@@ -2911,6 +3458,16 @@ function loadState() {
       paymentPaidAt: booking.paymentPaidAt ?? '',
       academicDecisionReason: booking.academicDecisionReason ?? '',
       wardenDecisionReason: booking.wardenDecisionReason ?? '',
+      specialFeedbackRecipientUsername: booking.specialFeedbackRecipientUsername
+        ? normalizeAcademicUsername(booking.specialFeedbackRecipientUsername, booking.department)
+        : '',
+      specialFeedbackRequestedBy: booking.specialFeedbackRequestedBy ?? '',
+      specialFeedbackRequestedAt: booking.specialFeedbackRequestedAt ?? '',
+      specialFeedbackMessage: booking.specialFeedbackMessage ?? '',
+      specialFeedbackProvidedBy: booking.specialFeedbackProvidedBy
+        ? normalizeAcademicUsername(booking.specialFeedbackProvidedBy, booking.department)
+        : '',
+      specialFeedbackProvidedAt: booking.specialFeedbackProvidedAt ?? '',
       studentClearedAt: booking.studentClearedAt ?? '',
       academicClearedBy: booking.academicClearedBy ?? [],
       wardenClearedBy: booking.wardenClearedBy ?? [],

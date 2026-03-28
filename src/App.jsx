@@ -1058,18 +1058,20 @@ function App() {
     try {
       if (usingSupabase) {
         await resetWorkflowData()
+        const remoteState = await loadSupabaseAppState({ iotLogUrl: '' })
+        setAppState(remoteState)
+      } else {
+        setAppState((previous) => ({
+          ...previous,
+          bookings: [],
+          iotLogUrl: '',
+          scanLogs: [],
+        }))
       }
     } catch (error) {
       setFeedback(error.message)
       return false
     }
-
-    setAppState((previous) => ({
-      ...previous,
-      bookings: [],
-      iotLogUrl: '',
-      scanLogs: [],
-    }))
     setFeedback(
       'Booking requests, approval history, clearance history, QR scan logs, and the saved scanner log URL were reset. Student profiles and master tables were kept.',
     )

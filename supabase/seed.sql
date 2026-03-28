@@ -113,6 +113,7 @@ insert into public.booking_requests (
   warden_status,
   warden_reviewed_by,
   warden_reviewed_at,
+  special_feedback_recipient_usernames,
   special_feedback_recipient_username,
   special_feedback_requested_by,
   special_feedback_requested_at,
@@ -120,6 +121,7 @@ insert into public.booking_requests (
   course_code,
   academic_activity,
   special_reason,
+  special_feedback_entries,
   special_feedback_message,
   special_feedback_provided_by,
   special_feedback_provided_at,
@@ -135,12 +137,12 @@ insert into public.booking_requests (
   student_cleared_at
 )
 values
-  ('BK-1001', timezone('utc', now()) - interval '3 days', 'regular', 's23000179', current_date + 5, current_date + 7, 2, 1, 'hodece', 'pending', null, null, 'warden', 'waiting', null, null, null, null, null, 'ece', 'ECE 1212', 'Weekend lab revision', null, null, null, null, '011 230 0179', '077 230 0179', 650.00, 'unpaid', null, null, null, 'TRF|BK-1001|s23000179', null, null),
-  ('BK-1002', timezone('utc', now()) - interval '8 days', 'regular', 's23000179', current_date + 1, current_date + 3, 4, 2, 'coordcivil', 'approved', 'coordcivil', timezone('utc', now()) - interval '6 days', 'subfemale', 'pending', null, null, null, null, null, 'civil', 'CIV 2104', 'Inter-faculty presentation practice', null, null, null, null, '011 230 0179', '077 230 0179', 650.00, 'unpaid', null, null, null, 'TRF|BK-1002|s23000179', null, null),
-  ('BK-1003', timezone('utc', now()) - interval '12 days', 'regular', 's23000427', current_date - 1, current_date + 2, 16, 3, 'counselor', 'approved', 'counselor', timezone('utc', now()) - interval '10 days', 'warden', 'approved', 'warden', timezone('utc', now()) - interval '9 days', null, null, null, 'ape', 'APE 1201', 'Morning workshop series', null, null, null, null, '011 230 0427', '077 230 0427', 700.00, 'paid', timezone('utc', now()) - interval '8 days', null, null, 'TRF|BK-1003|s23000427', null, null),
-  ('BK-1004', timezone('utc', now()) - interval '2 days', 'special', 's23000427', current_date + 10, current_date + 12, 19, 4, null, 'not_required', null, null, 'submale', 'pending', null, null, null, null, null, null, null, null, 'Participating in an urgent overnight case competition.', null, null, null, '011 230 0427', '077 230 0427', 650.00, 'unpaid', null, null, null, 'TRF|BK-1004|s23000427', null, null),
-  ('BK-1005', timezone('utc', now()) - interval '15 days', 'special', 's23000179', current_date - 5, current_date - 3, 1, 2, null, 'not_required', null, null, 'subfemale', 'approved', 'subfemale', timezone('utc', now()) - interval '14 days', 'counselor', 'subfemale', timezone('utc', now()) - interval '14 days', null, null, null, 'Medical observation after a late-night field exercise.', 'Student counselor confirmed the medical note and asked the warden team to keep a return-to-hostel follow-up on file.', 'counselor', timezone('utc', now()) - interval '13 days', '011 230 0179', '077 230 0179', 650.00, 'unpaid', null, null, null, 'TRF|BK-1005|s23000179', null, null),
-  ('BK-1006', timezone('utc', now()) - interval '6 days', 'regular', 's23000427', current_date + 14, current_date + 16, 18, 1, 'hodmech', 'rejected', 'hodmech', timezone('utc', now()) - interval '4 days', 'warden', 'waiting', null, null, null, null, null, 'mech', 'MEC 3308', 'Capstone review session', null, null, null, null, '011 230 0427', '077 230 0427', 650.00, 'unpaid', null, 'The request cannot be approved because the stated session is not scheduled for these dates.', null, 'TRF|BK-1006|s23000427', null, null)
+  ('BK-1001', timezone('utc', now()) - interval '3 days', 'regular', 's23000179', current_date + 5, current_date + 7, 2, 1, 'hodece', 'pending', null, null, 'warden', 'waiting', null, null, '[]'::jsonb, null, null, null, 'ece', 'ECE 1212', 'Weekend lab revision', null, '[]'::jsonb, null, null, null, '011 230 0179', '077 230 0179', 650.00, 'unpaid', null, null, null, 'TRF|BK-1001|s23000179', null, null),
+  ('BK-1002', timezone('utc', now()) - interval '8 days', 'regular', 's23000179', current_date + 1, current_date + 3, 4, 2, 'coordcivil', 'approved', 'coordcivil', timezone('utc', now()) - interval '6 days', 'subfemale', 'pending', null, null, '[]'::jsonb, null, null, null, 'civil', 'CIV 2104', 'Inter-faculty presentation practice', null, '[]'::jsonb, null, null, null, '011 230 0179', '077 230 0179', 650.00, 'unpaid', null, null, null, 'TRF|BK-1002|s23000179', null, null),
+  ('BK-1003', timezone('utc', now()) - interval '12 days', 'regular', 's23000427', current_date - 1, current_date + 2, 16, 3, 'counselor', 'approved', 'counselor', timezone('utc', now()) - interval '10 days', 'warden', 'approved', 'warden', timezone('utc', now()) - interval '9 days', '[]'::jsonb, null, null, null, 'ape', 'APE 1201', 'Morning workshop series', null, '[]'::jsonb, null, null, null, '011 230 0427', '077 230 0427', 700.00, 'paid', timezone('utc', now()) - interval '8 days', null, null, 'TRF|BK-1003|s23000427', null, null),
+  ('BK-1004', timezone('utc', now()) - interval '2 days', 'special', 's23000427', current_date + 10, current_date + 12, 19, 4, null, 'not_required', null, null, 'submale', 'pending', null, null, '[]'::jsonb, null, null, null, null, null, null, 'Participating in an urgent overnight case competition.', '[]'::jsonb, null, null, null, '011 230 0427', '077 230 0427', 650.00, 'unpaid', null, null, null, 'TRF|BK-1004|s23000427', null, null),
+  ('BK-1005', timezone('utc', now()) - interval '15 days', 'special', 's23000179', current_date - 5, current_date - 3, 1, 2, null, 'not_required', null, null, 'subfemale', 'approved', 'subfemale', timezone('utc', now()) - interval '14 days', jsonb_build_array('counselor', 'hodape'), 'counselor', 'subfemale', timezone('utc', now()) - interval '14 days', null, null, null, 'Medical observation after a late-night field exercise.', jsonb_build_array(jsonb_build_object('actorUsername', 'counselor', 'message', 'Student counselor confirmed the medical note and asked the warden team to keep a return-to-hostel follow-up on file.', 'providedAt', timezone('utc', now()) - interval '13 days'), jsonb_build_object('actorUsername', 'hodape', 'message', 'HOD acknowledged the emergency case and asked the warden to keep the department updated until checkout.', 'providedAt', timezone('utc', now()) - interval '12 days')), 'HOD acknowledged the emergency case and asked the warden to keep the department updated until checkout.', 'hodape', timezone('utc', now()) - interval '12 days', '011 230 0179', '077 230 0179', 650.00, 'unpaid', null, null, null, 'TRF|BK-1005|s23000179', null, null),
+  ('BK-1006', timezone('utc', now()) - interval '6 days', 'regular', 's23000427', current_date + 14, current_date + 16, 18, 1, 'hodmech', 'rejected', 'hodmech', timezone('utc', now()) - interval '4 days', 'warden', 'waiting', null, null, '[]'::jsonb, null, null, null, 'mech', 'MEC 3308', 'Capstone review session', null, '[]'::jsonb, null, null, null, '011 230 0427', '077 230 0427', 650.00, 'unpaid', null, 'The request cannot be approved because the stated session is not scheduled for these dates.', null, 'TRF|BK-1006|s23000427', null, null)
 on conflict (id) do update
 set
   created_at = excluded.created_at,
@@ -158,6 +160,7 @@ set
   warden_status = excluded.warden_status,
   warden_reviewed_by = excluded.warden_reviewed_by,
   warden_reviewed_at = excluded.warden_reviewed_at,
+  special_feedback_recipient_usernames = excluded.special_feedback_recipient_usernames,
   special_feedback_recipient_username = excluded.special_feedback_recipient_username,
   special_feedback_requested_by = excluded.special_feedback_requested_by,
   special_feedback_requested_at = excluded.special_feedback_requested_at,
@@ -165,6 +168,7 @@ set
   course_code = excluded.course_code,
   academic_activity = excluded.academic_activity,
   special_reason = excluded.special_reason,
+  special_feedback_entries = excluded.special_feedback_entries,
   special_feedback_message = excluded.special_feedback_message,
   special_feedback_provided_by = excluded.special_feedback_provided_by,
   special_feedback_provided_at = excluded.special_feedback_provided_at,

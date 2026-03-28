@@ -68,6 +68,12 @@ export async function saveBooking(booking) {
   throwOnResultError(result, `save booking ${booking.id}`)
 }
 
+export async function saveUserProfile(user) {
+  const supabase = requireSupabase()
+  const result = await supabase.from('profiles').upsert(mapUserToDbProfile(user))
+  throwOnResultError(result, `save profile ${user.username}`)
+}
+
 export async function saveBookings(bookings) {
   if (!bookings.length) {
     return
@@ -177,6 +183,7 @@ const BOOKING_COLUMNS = [
   'warden_status',
   'warden_reviewed_by',
   'warden_reviewed_at',
+  'special_feedback_recipient_usernames',
   'special_feedback_recipient_username',
   'special_feedback_requested_by',
   'special_feedback_requested_at',
@@ -184,6 +191,7 @@ const BOOKING_COLUMNS = [
   'course_code',
   'academic_activity',
   'special_reason',
+  'special_feedback_entries',
   'special_feedback_message',
   'special_feedback_provided_by',
   'special_feedback_provided_at',
@@ -243,6 +251,18 @@ function mapBookingToAppBooking(booking, departmentCodeToName, clearancesByBooki
   const requestedDays =
     booking.requested_days ?? calculateRequestedDays(booking.check_in, booking.check_out)
   const clearances = clearancesByBooking.get(booking.id) ?? { academic: [], warden: [] }
+  const specialFeedbackRecipients = normalizeDbStringArray(
+    booking.special_feedback_recipient_usernames,
+    booking.special_feedback_recipient_username,
+  )
+  const specialFeedbackEntries = normalizeDbFeedbackEntries(
+    booking.special_feedback_entries,
+    buildLegacyDbFeedbackEntries(
+      booking.special_feedback_provided_by,
+      booking.special_feedback_message,
+      booking.special_feedback_provided_at,
+    ),
+  )
 
   return {
     id: booking.id,
@@ -262,16 +282,14 @@ function mapBookingToAppBooking(booking, departmentCodeToName, clearancesByBooki
     wardenStatus: booking.warden_status,
     wardenReviewedBy: booking.warden_reviewed_by ?? '',
     wardenReviewedAt: booking.warden_reviewed_at ?? '',
-    specialFeedbackRecipientUsername: booking.special_feedback_recipient_username ?? '',
+    specialFeedbackRecipients,
     specialFeedbackRequestedBy: booking.special_feedback_requested_by ?? '',
     specialFeedbackRequestedAt: booking.special_feedback_requested_at ?? '',
     department: getDepartmentName(booking.department_code, departmentCodeToName),
     courseCode: booking.course_code ?? '',
     academicActivity: booking.academic_activity ?? '',
     specialReason: booking.special_reason ?? '',
-    specialFeedbackMessage: booking.special_feedback_message ?? '',
-    specialFeedbackProvidedBy: booking.special_feedback_provided_by ?? '',
-    specialFeedbackProvidedAt: booking.special_feedback_provided_at ?? '',
+    specialFeedbackEntries,
     homePhone: booking.home_phone ?? '',
     mobilePhone: booking.mobile_phone ?? '',
     paymentTotal:
@@ -305,7 +323,32 @@ function mapScanLogToAppScanLog(log) {
   }
 }
 
+function mapUserToDbProfile(user) {
+  return {
+    username: user.username,
+    role_group: user.roleGroup,
+    role_label: user.roleLabel,
+    department_code: normalizeNullableString(getDepartmentCode(user.department)),
+    managed_gender: normalizeNullableString(toDbHostelGender(user.managedGender)),
+    gender: normalizeNullableString(toDbHostelGender(user.gender)),
+    name: user.name,
+    student_number: normalizeNullableString(user.studentNumber),
+    registration_number: normalizeNullableString(user.registrationNumber),
+    faculty: normalizeNullableString(user.faculty),
+    degree_program: normalizeNullableString(user.degreeProgram),
+    email: normalizeNullableString(user.email),
+    address: normalizeNullableString(user.address),
+    home_phone: normalizeNullableString(user.homePhone),
+    mobile_phone: normalizeNullableString(user.mobilePhone),
+    is_active: true,
+  }
+}
+
 function mapBookingToDbBooking(booking) {
+  const specialFeedbackRecipients = normalizeDbStringArray(booking.specialFeedbackRecipients)
+  const specialFeedbackEntries = normalizeDbFeedbackEntries(booking.specialFeedbackEntries)
+  const latestSpecialFeedbackEntry = specialFeedbackEntries.at(-1) ?? null
+
   return {
     id: booking.id,
     created_at: booking.createdAt || new Date().toISOString(),
@@ -323,16 +366,18 @@ function mapBookingToDbBooking(booking) {
     warden_status: booking.wardenStatus ?? 'pending',
     warden_reviewed_by: normalizeNullableString(booking.wardenReviewedBy),
     warden_reviewed_at: normalizeNullableString(booking.wardenReviewedAt),
-    special_feedback_recipient_username: normalizeNullableString(booking.specialFeedbackRecipientUsername),
+    special_feedback_recipient_usernames: specialFeedbackRecipients,
+    special_feedback_recipient_username: normalizeNullableString(specialFeedbackRecipients[0]),
     special_feedback_requested_by: normalizeNullableString(booking.specialFeedbackRequestedBy),
     special_feedback_requested_at: normalizeNullableString(booking.specialFeedbackRequestedAt),
     department_code: normalizeNullableString(getDepartmentCode(booking.department)),
     course_code: normalizeNullableString(booking.courseCode),
     academic_activity: normalizeNullableString(booking.academicActivity),
     special_reason: normalizeNullableString(booking.specialReason),
-    special_feedback_message: normalizeNullableString(booking.specialFeedbackMessage),
-    special_feedback_provided_by: normalizeNullableString(booking.specialFeedbackProvidedBy),
-    special_feedback_provided_at: normalizeNullableString(booking.specialFeedbackProvidedAt),
+    special_feedback_entries: specialFeedbackEntries,
+    special_feedback_message: normalizeNullableString(latestSpecialFeedbackEntry?.message),
+    special_feedback_provided_by: normalizeNullableString(latestSpecialFeedbackEntry?.actorUsername),
+    special_feedback_provided_at: normalizeNullableString(latestSpecialFeedbackEntry?.providedAt),
     home_phone: normalizeNullableString(booking.homePhone),
     mobile_phone: normalizeNullableString(booking.mobilePhone),
     payment_total: booking.paymentTotal ?? calculatePaymentTotal(booking.requestedDays ?? calculateRequestedDays(booking.checkIn, booking.checkOut)),
@@ -344,6 +389,43 @@ function mapBookingToDbBooking(booking) {
     cancelled_at: normalizeNullableString(booking.cancelledAt),
     student_cleared_at: normalizeNullableString(booking.studentClearedAt),
   }
+}
+
+function normalizeDbStringArray(values, fallbackValue = '') {
+  if (Array.isArray(values)) {
+    return [...new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean))]
+  }
+
+  if (fallbackValue) {
+    return [String(fallbackValue).trim()].filter(Boolean)
+  }
+
+  return []
+}
+
+function normalizeDbFeedbackEntries(entries, fallbackEntries = []) {
+  const sourceEntries = Array.isArray(entries) ? entries : fallbackEntries
+
+  return sourceEntries
+    .map((entry) => ({
+      actorUsername: String(entry?.actorUsername ?? '').trim(),
+      message: String(entry?.message ?? '').trim(),
+      providedAt: entry?.providedAt ?? '',
+    }))
+    .filter((entry) => entry.actorUsername && entry.message)
+    .sort((left, right) => new Date(left.providedAt || 0) - new Date(right.providedAt || 0))
+}
+
+function buildLegacyDbFeedbackEntries(actorUsername, message, providedAt) {
+  if (!actorUsername || !message) {
+    return []
+  }
+
+  return [{
+    actorUsername,
+    message,
+    providedAt: providedAt ?? '',
+  }]
 }
 
 function buildClearanceMap(clearances) {
@@ -422,6 +504,14 @@ function toTitleCase(value) {
   }
 
   return String(value).charAt(0).toUpperCase() + String(value).slice(1)
+}
+
+function toDbHostelGender(value) {
+  if (!value) {
+    return ''
+  }
+
+  return String(value).trim().toLowerCase()
 }
 
 function throwOnResultError(result, action) {

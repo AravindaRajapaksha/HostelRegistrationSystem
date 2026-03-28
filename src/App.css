@@ -903,6 +903,30 @@ h4 {
   grid-template-columns: 1fr;
 }
 
+.selection-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.selection-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.85rem 1rem;
+  border-radius: 1rem;
+  border: 1px solid var(--border);
+  background: rgba(247, 251, 255, 0.9);
+  cursor: pointer;
+}
+
+.selection-item input {
+  margin-top: 0.18rem;
+}
+
+.selection-item span {
+  color: var(--ink);
+}
+
 .staff-contact-group {
   display: grid;
   gap: 0.9rem;

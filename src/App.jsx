@@ -32,6 +32,7 @@ import {
   loadSupabaseAppState,
   saveBooking,
   saveBookings,
+  saveUserProfile,
   usesSupabaseBackend,
 } from './lib/appStateStore'
 
@@ -242,12 +243,10 @@ function App() {
       courseCode: selectedSubjects.join(', '),
       academicActivity: formValues.workflow === 'regular' ? formValues.academicActivity : '',
       specialReason: formValues.workflow === 'special' ? formValues.specialReason : '',
-      specialFeedbackRecipientUsername: '',
+      specialFeedbackRecipients: [],
       specialFeedbackRequestedBy: '',
       specialFeedbackRequestedAt: '',
-      specialFeedbackMessage: '',
-      specialFeedbackProvidedBy: '',
-      specialFeedbackProvidedAt: '',
+      specialFeedbackEntries: [],
       homePhone: formValues.homePhone,
       mobilePhone: formValues.mobilePhone,
       paymentTotal: calculatePaymentTotal(requestedDays),
@@ -272,6 +271,167 @@ function App() {
     setAppState((previous) => ({ ...previous, bookings: [booking, ...previous.bookings] }))
     setActiveView('bookings')
     setFeedback(`Booking ${booking.id} was created and routed for approval.`)
+  }
+
+  async function createEmergencyBooking(formValues) {
+    if (!currentUser || currentUser.roleGroup !== 'warden') {
+      return false
+    }
+
+    const normalizedStudentNumber = String(formValues.studentNumber ?? '').trim().toLowerCase()
+    const normalizedRegistrationNumber = String(formValues.registrationNumber ?? '').trim()
+    const normalizedName = String(formValues.name ?? '').trim()
+    const normalizedGender = String(formValues.gender ?? '').trim()
+    const normalizedHomePhone = String(formValues.homePhone ?? '').trim()
+    const normalizedMobilePhone = String(formValues.mobilePhone ?? '').trim()
+    const normalizedReason = String(formValues.specialReason ?? '').trim()
+
+    if (!normalizedStudentNumber) {
+      setFeedback('Enter the student number before creating the emergency permission booking.')
+      return false
+    }
+
+    if (!normalizedRegistrationNumber) {
+      setFeedback('Enter the registration number before creating the emergency permission booking.')
+      return false
+    }
+
+    if (!normalizedName) {
+      setFeedback('Enter the student name before creating the emergency permission booking.')
+      return false
+    }
+
+    if (!normalizedGender) {
+      setFeedback('Select the student gender before creating the emergency permission booking.')
+      return false
+    }
+
+    if (!formValues.checkIn || !formValues.checkOut) {
+      setFeedback('Choose both the check-in date and check-out date before creating the emergency permission booking.')
+      return false
+    }
+
+    if (!normalizedHomePhone || !normalizedMobilePhone) {
+      setFeedback('Add both the home contact number and mobile contact number before creating the emergency permission booking.')
+      return false
+    }
+
+    if (!normalizedReason) {
+      setFeedback('Enter the emergency reason before creating the emergency permission booking.')
+      return false
+    }
+
+    const requestedDays = calculateRequestedDays(formValues.checkIn, formValues.checkOut)
+
+    if (!requestedDays) {
+      setFeedback('Choose a valid check-in and check-out date before creating the emergency permission booking.')
+      return false
+    }
+
+    const availableBeds = getAvailableBeds(
+      appState.bookings,
+      formValues.checkIn,
+      formValues.checkOut,
+      '',
+      normalizedGender,
+    ).filter((bed) => getVisibleRoomNumbersForWarden(currentUser).includes(bed.roomNumber))
+    const selectedBed = availableBeds.find(
+      (bed) =>
+        bed.roomNumber === Number(formValues.roomNumber) &&
+        bed.bedNumber === Number(formValues.bedNumber),
+    )
+
+    if (!selectedBed) {
+      setFeedback('That room and bed are no longer available for the selected dates.')
+      return false
+    }
+
+    const existingStudent = findStudentByEmergencyIdentity(
+      appState.users,
+      normalizedStudentNumber,
+      normalizedRegistrationNumber,
+    )
+    const studentUsername = existingStudent?.username ?? normalizedStudentNumber
+    const nextStudent = {
+      username: studentUsername,
+      password: existingStudent?.password ?? studentUsername,
+      roleGroup: 'student',
+      roleLabel: 'Student',
+      department: '',
+      managedGender: '',
+      gender: normalizedGender,
+      name: normalizedName,
+      studentNumber: normalizedStudentNumber,
+      registrationNumber: normalizedRegistrationNumber,
+      faculty: String(formValues.faculty ?? '').trim() || existingStudent?.faculty || '',
+      degreeProgram: String(formValues.degreeProgram ?? '').trim() || existingStudent?.degreeProgram || '',
+      email: String(formValues.email ?? '').trim() || existingStudent?.email || '',
+      address: String(formValues.address ?? '').trim() || existingStudent?.address || '',
+      homePhone: normalizedHomePhone,
+      mobilePhone: normalizedMobilePhone,
+    }
+
+    const bookingId = createBookingId()
+    const booking = {
+      id: bookingId,
+      createdAt: toIsoDate(new Date()),
+      workflow: 'emergency',
+      studentUsername,
+      checkIn: formValues.checkIn,
+      checkOut: formValues.checkOut,
+      requestedDays,
+      roomNumber: Number(formValues.roomNumber),
+      bedNumber: Number(formValues.bedNumber),
+      academicApproverUsername: '',
+      academicStatus: 'not_required',
+      academicReviewedBy: '',
+      academicReviewedAt: '',
+      wardenApproverUsername: currentUser.username,
+      wardenStatus: 'pending',
+      wardenReviewedBy: '',
+      wardenReviewedAt: '',
+      department: formValues.department,
+      courseCode: '',
+      academicActivity: '',
+      specialReason: normalizedReason,
+      specialFeedbackRecipients: [],
+      specialFeedbackRequestedBy: '',
+      specialFeedbackRequestedAt: '',
+      specialFeedbackEntries: [],
+      homePhone: normalizedHomePhone,
+      mobilePhone: normalizedMobilePhone,
+      paymentTotal: calculatePaymentTotal(requestedDays),
+      paymentStatus: 'unpaid',
+      paymentPaidAt: '',
+      academicDecisionReason: '',
+      wardenDecisionReason: '',
+      qrValue: createQrValue(bookingId, studentUsername),
+      cancelledAt: '',
+      studentClearedAt: '',
+    }
+
+    try {
+      if (usingSupabase) {
+        await saveUserProfile(nextStudent)
+        await saveBooking(booking)
+      }
+    } catch (error) {
+      setFeedback(error.message)
+      return false
+    }
+
+    setAppState((previous) => ({
+      ...previous,
+      users: upsertUser(previous.users, nextStudent),
+      bookings: [booking, ...previous.bookings],
+    }))
+    setActiveView('emergency')
+    setFeedback(
+      existingStudent
+        ? `Emergency booking ${bookingId} was created for ${nextStudent.name} and routed for warden approval.`
+        : `Emergency student ${nextStudent.name} was added and booking ${bookingId} was routed for warden approval.`,
+    )
+    return true
   }
 
   async function decideAcademic(bookingId, decision, reason = '') {
@@ -347,7 +507,7 @@ function App() {
     const targetBooking = appState.bookings.find((booking) => booking.id === bookingId)
 
     if (!targetBooking || !canAcademicUserProvideSpecialFeedback(currentUser, targetBooking)) {
-      setFeedback('This special reason feedback request is not assigned to your account.')
+      setFeedback('This warden feedback request is not assigned to your account.')
       return
     }
 
@@ -358,11 +518,15 @@ function App() {
       return
     }
 
+    const providedAt = new Date().toISOString()
+    const nextEntry = {
+      actorUsername: currentUser.username,
+      message: trimmedMessage,
+      providedAt,
+    }
     const updatedBooking = {
       ...targetBooking,
-      specialFeedbackMessage: trimmedMessage,
-      specialFeedbackProvidedBy: currentUser.username,
-      specialFeedbackProvidedAt: new Date().toISOString(),
+      specialFeedbackEntries: upsertSpecialFeedbackEntry(targetBooking.specialFeedbackEntries, nextEntry),
     }
 
     try {
@@ -388,7 +552,7 @@ function App() {
     setFeedback(`Feedback for ${bookingId} was sent to the warden.`)
   }
 
-  async function decideWarden(bookingId, decision, reason = '', specialFeedbackRecipientUsername = '') {
+  async function decideWarden(bookingId, decision, reason = '', specialFeedbackRecipients = []) {
     if (!currentUser || currentUser.roleGroup !== 'warden') {
       return
     }
@@ -406,20 +570,21 @@ function App() {
       return
     }
 
-    const trimmedFeedbackRecipient = specialFeedbackRecipientUsername.trim()
+    const normalizedFeedbackRecipients = normalizeSpecialFeedbackRecipients(specialFeedbackRecipients, targetBooking.department)
 
-    if (decision === 'approved' && targetBooking.workflow === 'special') {
-      if (!trimmedFeedbackRecipient) {
-        setFeedback('Select the academic staff member who should send feedback on this special reason booking.')
+    if (decision === 'approved' && WARDEN_ONLY_WORKFLOWS.includes(targetBooking.workflow)) {
+      if (!normalizedFeedbackRecipients.length) {
+        setFeedback('Select at least one academic staff member who should send feedback on this warden-approved booking.')
         return
       }
 
-      const recipientIsValid = getSpecialFeedbackCandidateUsers(appState.users, targetBooking).some(
-        (user) => user.username === trimmedFeedbackRecipient,
+      const candidateUsernames = new Set(
+        getSpecialFeedbackCandidateUsers(appState.users, targetBooking).map((user) => user.username),
       )
+      const recipientIsValid = normalizedFeedbackRecipients.every((username) => candidateUsernames.has(username))
 
       if (!recipientIsValid) {
-        setFeedback('Select a valid academic staff member for the special reason feedback request.')
+        setFeedback('Select valid academic staff members for the feedback request.')
         return
       }
     }
@@ -429,8 +594,10 @@ function App() {
       'Automatically not approved because another overlapping request for this room and bed was approved first.'
     const updatedBookings = appState.bookings.map((booking) => {
       if (booking.id === bookingId) {
-        const assignSpecialFeedback = targetBooking.workflow === 'special' && decision === 'approved'
-        const clearSpecialFeedback = targetBooking.workflow === 'special' && decision === 'rejected'
+        const assignSpecialFeedback =
+          WARDEN_ONLY_WORKFLOWS.includes(targetBooking.workflow) && decision === 'approved'
+        const clearSpecialFeedback =
+          WARDEN_ONLY_WORKFLOWS.includes(targetBooking.workflow) && decision === 'rejected'
 
         return {
           ...booking,
@@ -438,11 +605,11 @@ function App() {
           wardenReviewedBy: currentUser.username,
           wardenReviewedAt: reviewedAt,
           wardenDecisionReason: decision === 'rejected' ? reason.trim() : '',
-          specialFeedbackRecipientUsername: assignSpecialFeedback
-            ? trimmedFeedbackRecipient
+          specialFeedbackRecipients: assignSpecialFeedback
+            ? normalizedFeedbackRecipients
             : clearSpecialFeedback
-              ? ''
-              : booking.specialFeedbackRecipientUsername ?? '',
+              ? []
+              : normalizeSpecialFeedbackRecipients(booking.specialFeedbackRecipients, booking.department),
           specialFeedbackRequestedBy: assignSpecialFeedback
             ? currentUser.username
             : clearSpecialFeedback
@@ -453,9 +620,9 @@ function App() {
             : clearSpecialFeedback
               ? ''
               : booking.specialFeedbackRequestedAt ?? '',
-          specialFeedbackMessage: assignSpecialFeedback || clearSpecialFeedback ? '' : booking.specialFeedbackMessage ?? '',
-          specialFeedbackProvidedBy: assignSpecialFeedback || clearSpecialFeedback ? '' : booking.specialFeedbackProvidedBy ?? '',
-          specialFeedbackProvidedAt: assignSpecialFeedback || clearSpecialFeedback ? '' : booking.specialFeedbackProvidedAt ?? '',
+          specialFeedbackEntries: assignSpecialFeedback || clearSpecialFeedback
+            ? []
+            : normalizeSpecialFeedbackEntries(booking.specialFeedbackEntries, booking.department),
         }
       }
 
@@ -519,14 +686,14 @@ function App() {
       }),
     }))
 
-    const selectedFeedbackRecipient = appState.users.find(
-      (user) => user.username === trimmedFeedbackRecipient,
+    const selectedFeedbackRecipients = appState.users.filter((user) =>
+      normalizedFeedbackRecipients.includes(user.username),
     )
 
     setFeedback(
       decision === 'approved'
-        ? targetBooking.workflow === 'special'
-          ? `Warden approval recorded for ${bookingId}. ${selectedFeedbackRecipient?.name ?? 'The selected academic staff member'} can now send feedback back to the warden.`
+        ? WARDEN_ONLY_WORKFLOWS.includes(targetBooking.workflow)
+          ? `Warden approval recorded for ${bookingId}. ${selectedFeedbackRecipients.length} selected academic staff member(s) can now send feedback back to the warden.`
           : `Warden approval recorded for ${bookingId}. Availability was updated for overlapping requests.`
         : `Warden rejection recorded for ${bookingId} with the not-approved reason.`,
     )
@@ -572,6 +739,50 @@ function App() {
     }))
 
     setFeedback(`Payment completed for ${bookingId}. The QR code is now available.`)
+  }
+
+  async function recordEmergencyPayment(bookingId) {
+    if (!currentUser || currentUser.roleGroup !== 'warden') {
+      return
+    }
+
+    const targetBooking = appState.bookings.find(
+      (booking) =>
+        booking.id === bookingId &&
+        booking.workflow === 'emergency' &&
+        canWardenUserReviewBooking(currentUser, booking),
+    )
+
+    if (!targetBooking) {
+      return
+    }
+
+    if (getCurrentStatus(targetBooking) !== 'approved' || isPaymentComplete(targetBooking)) {
+      setFeedback(`Payment cannot be recorded for ${bookingId} right now.`)
+      return
+    }
+
+    const updatedBooking = {
+      ...targetBooking,
+      paymentStatus: 'paid',
+      paymentPaidAt: new Date().toISOString(),
+    }
+
+    try {
+      if (usingSupabase) {
+        await saveBooking(updatedBooking)
+      }
+    } catch (error) {
+      setFeedback(error.message)
+      return
+    }
+
+    setAppState((previous) => ({
+      ...previous,
+      bookings: previous.bookings.map((booking) => (booking.id === bookingId ? updatedBooking : booking)),
+    }))
+
+    setFeedback(`Emergency payment completed for ${bookingId}. The QR code is now available.`)
   }
 
   async function cancelBooking(bookingId) {
@@ -863,6 +1074,7 @@ function App() {
       {renderView({
         activeView,
         appState,
+        onCreateEmergencyBooking: createEmergencyBooking,
         currentUser,
         onAcademicDecision: decideAcademic,
         onAcademicSpecialFeedback: submitSpecialFeedback,
@@ -871,6 +1083,7 @@ function App() {
         onClearStudentBooking: clearStudentBookingHistory,
         onClearWardenBooking: clearWardenBookingHistory,
         onPayBooking: payBooking,
+        onRecordEmergencyPayment: recordEmergencyPayment,
         onSubmitBooking: submitBooking,
         onSyncIotLog: syncIotLogFromUrl,
         onUpdateIotLogUrl: updateIotLogUrl,
@@ -883,6 +1096,7 @@ function App() {
 function renderView({
   activeView,
   appState,
+  onCreateEmergencyBooking,
   currentUser,
   onAcademicDecision,
   onAcademicSpecialFeedback,
@@ -891,6 +1105,7 @@ function renderView({
   onClearStudentBooking,
   onClearWardenBooking,
   onPayBooking,
+  onRecordEmergencyPayment,
   onSubmitBooking,
   onSyncIotLog,
   onUpdateIotLogUrl,
@@ -952,7 +1167,7 @@ function renderView({
         <AcademicDashboardView
           approvalBookings={relevant.filter((booking) => booking.academicStatus === 'pending')}
           currentUser={currentUser}
-          feedbackBookings={feedbackRelevant.filter((booking) => !booking.specialFeedbackProvidedAt)}
+          feedbackBookings={feedbackRelevant}
           onSubmitFeedback={onAcademicSpecialFeedback}
           users={appState.users}
           onDecision={onAcademicDecision}
@@ -1014,8 +1229,7 @@ function renderView({
     return (
       <WardenDashboardView
         bookings={relevant.filter(
-          (booking) =>
-            WARDEN_ONLY_WORKFLOWS.includes(booking.workflow) && booking.wardenStatus === 'pending',
+          (booking) => booking.workflow === 'special' && booking.wardenStatus === 'pending',
         )}
         currentUser={currentUser}
         users={appState.users}
@@ -1067,14 +1281,14 @@ function renderView({
 
   if (activeView === 'emergency') {
     return (
-      <DecisionListView
-        bookings={relevant.filter(
-          (booking) => booking.workflow === 'special' && booking.wardenStatus === 'approved',
-        )}
-        onClear={onClearWardenBooking}
+      <EmergencyPermissionView
+        allBookings={appState.bookings}
+        bookings={relevant.filter((booking) => booking.workflow === 'emergency')}
         currentUser={currentUser}
-        emptyCopy="No emergency permission records are available yet."
-        showQr
+        onClear={onClearWardenBooking}
+        onCreate={onCreateEmergencyBooking}
+        onDecision={onWardenDecision}
+        onPay={onRecordEmergencyPayment}
         title="Emergency Permission"
         users={appState.users}
       />
@@ -1765,6 +1979,291 @@ function StudentBookingsView({ bookings, currentUser, onCancel, onClear, onPay, 
   )
 }
 
+function EmergencyPermissionView({
+  allBookings,
+  bookings,
+  currentUser,
+  onClear,
+  onCreate,
+  onDecision,
+  onPay,
+  title,
+  users,
+}) {
+  const [query, setQuery] = useState('')
+  const [form, setForm] = useState(() => createInitialEmergencyForm())
+  const requestedDays = calculateRequestedDays(form.checkIn, form.checkOut)
+  const availableBeds = getAvailableBeds(allBookings, form.checkIn, form.checkOut, '', form.gender)
+    .filter((bed) => getVisibleRoomNumbersForWarden(currentUser).includes(bed.roomNumber))
+  const roomOptions = uniqueRoomOptions(availableBeds)
+  const resolvedRoomNumber = roomOptions.some((option) => option.value === form.roomNumber)
+    ? form.roomNumber
+    : roomOptions[0]?.value ?? ''
+  const bedOptions = availableBeds
+    .filter((bed) => String(bed.roomNumber) === resolvedRoomNumber)
+    .map((bed) => ({
+      value: String(bed.bedNumber),
+      label: `Bed ${bed.bedNumber}`,
+    }))
+  const resolvedBedNumber = bedOptions.some((option) => option.value === form.bedNumber)
+    ? form.bedNumber
+    : bedOptions[0]?.value ?? ''
+
+  const pendingApprovals = bookings.filter((booking) => booking.wardenStatus === 'pending')
+  const visibleRecords = bookings.filter((booking) => {
+    const status = getCurrentStatus(booking)
+    return !isHistoryClearedForUser(booking, currentUser) && status !== 'pending warden'
+  })
+  const filteredRecords = filterBookings(visibleRecords, users, query)
+  const pendingPayments = visibleRecords.filter(
+    (booking) => getCurrentStatus(booking) === 'approved' && !isPaymentComplete(booking),
+  )
+  const qrReadyRecords = visibleRecords.filter(
+    (booking) => getCurrentStatus(booking) === 'approved' && isPaymentComplete(booking),
+  )
+
+  async function handleSubmit(event) {
+    event.preventDefault()
+    const didCreate = await onCreate({
+      ...form,
+      bedNumber: resolvedBedNumber,
+      roomNumber: resolvedRoomNumber,
+    })
+
+    if (didCreate) {
+      setForm(createInitialEmergencyForm())
+    }
+  }
+
+  return (
+    <div className="stacked-layout">
+      <section className="feature-panel">
+        <div>
+          <div className="eyebrow">{currentUser.roleLabel}</div>
+          <h2>{title}</h2>
+          <p>
+            Create emergency student records, submit emergency bookings, complete warden approval,
+            request academic feedback, collect payment, and release the QR code after payment.
+          </p>
+        </div>
+        <div className="metric-strip">
+          <MetricCard label="Emergency records" value={`${bookings.length}`} />
+          <MetricCard label="Pending approvals" value={`${pendingApprovals.length}`} />
+          <MetricCard label="Pending payments" value={`${pendingPayments.length}`} />
+          <MetricCard label="QR ready" value={`${qrReadyRecords.length}`} />
+        </div>
+      </section>
+
+      <form className="panel-card form-card" onSubmit={handleSubmit}>
+        <div className="form-heading">
+          <div className="eyebrow">Emergency Student</div>
+          <h3>Create emergency student and booking</h3>
+        </div>
+
+        <div className="form-grid">
+          <Field
+            label="Student name"
+            name="name"
+            value={form.name}
+            onChange={(value) => setForm((previous) => ({ ...previous, name: value }))}
+          />
+          <Field
+            label="Student number (S number)"
+            name="studentNumber"
+            value={form.studentNumber}
+            onChange={(value) => setForm((previous) => ({ ...previous, studentNumber: value }))}
+          />
+          <Field
+            label="Registration number"
+            name="registrationNumber"
+            value={form.registrationNumber}
+            onChange={(value) => setForm((previous) => ({ ...previous, registrationNumber: value }))}
+          />
+          <SelectField
+            label="Gender"
+            name="gender"
+            value={form.gender}
+            onChange={(value) => setForm((previous) => ({ ...previous, gender: value }))}
+            options={[
+              { value: '', label: 'Select gender' },
+              { value: 'Female', label: 'Female' },
+              { value: 'Male', label: 'Male' },
+            ]}
+          />
+          <SelectField
+            label="Department (optional)"
+            name="department"
+            value={form.department}
+            onChange={(value) => setForm((previous) => ({ ...previous, department: value }))}
+            options={[
+              { value: '', label: 'Select department' },
+              ...DEPARTMENT_OPTIONS.map((department) => ({
+                value: department,
+                label: department,
+              })),
+            ]}
+          />
+          <Field
+            label="Faculty (optional)"
+            name="faculty"
+            value={form.faculty}
+            onChange={(value) => setForm((previous) => ({ ...previous, faculty: value }))}
+          />
+          <Field
+            label="Degree program (optional)"
+            name="degreeProgram"
+            value={form.degreeProgram}
+            onChange={(value) => setForm((previous) => ({ ...previous, degreeProgram: value }))}
+          />
+          <Field
+            label="Email (optional)"
+            name="email"
+            type="email"
+            value={form.email}
+            onChange={(value) => setForm((previous) => ({ ...previous, email: value }))}
+          />
+          <Field
+            label="Home contact"
+            name="homePhone"
+            value={form.homePhone}
+            onChange={(value) => setForm((previous) => ({ ...previous, homePhone: value }))}
+          />
+          <Field
+            label="Mobile contact"
+            name="mobilePhone"
+            value={form.mobilePhone}
+            onChange={(value) => setForm((previous) => ({ ...previous, mobilePhone: value }))}
+          />
+          <Field
+            label="Check-in date"
+            name="checkIn"
+            type="date"
+            value={form.checkIn}
+            onChange={(value) => setForm((previous) => ({ ...previous, checkIn: value }))}
+          />
+          <Field
+            label="Check-out date"
+            name="checkOut"
+            type="date"
+            value={form.checkOut}
+            onChange={(value) => setForm((previous) => ({ ...previous, checkOut: value }))}
+          />
+          <SelectField
+            label="Room number"
+            name="roomNumber"
+            value={resolvedRoomNumber}
+            onChange={(value) => setForm((previous) => ({ ...previous, roomNumber: value }))}
+            options={roomOptions.length ? roomOptions : [{ value: '', label: 'No rooms available' }]}
+          />
+          <SelectField
+            label="Bed number"
+            name="bedNumber"
+            value={resolvedBedNumber}
+            onChange={(value) => setForm((previous) => ({ ...previous, bedNumber: value }))}
+            options={bedOptions.length ? bedOptions : [{ value: '', label: 'No beds available' }]}
+          />
+          <TextAreaField
+            label="Address (optional)"
+            name="address"
+            value={form.address}
+            onChange={(value) => setForm((previous) => ({ ...previous, address: value }))}
+          />
+          <TextAreaField
+            label="Emergency reason"
+            name="specialReason"
+            value={form.specialReason}
+            onChange={(value) => setForm((previous) => ({ ...previous, specialReason: value }))}
+          />
+        </div>
+
+        <div className="button-row">
+          <button className="primary-button" type="submit">
+            Create emergency booking
+          </button>
+        </div>
+      </form>
+
+      <WardenDashboardView
+        bookings={pendingApprovals}
+        currentUser={currentUser}
+        users={users}
+        onDecision={onDecision}
+        title="Pending Emergency Approvals"
+      />
+
+      <section className="panel-card">
+        <div className="section-heading">
+          <div>
+            <div className="eyebrow">{currentUser.roleLabel}</div>
+            <h2>Emergency Records</h2>
+          </div>
+          <label className="search-field">
+            <span>Search</span>
+            <input
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search student details, booking id, or room"
+              type="search"
+              value={query}
+            />
+          </label>
+        </div>
+
+        {filteredRecords.length ? (
+          <div className="card-list">
+            {filteredRecords.map((booking) => {
+              const status = getCurrentStatus(booking)
+              const paid = isPaymentComplete(booking)
+
+              let action = null
+
+              if (status === 'approved' && !paid) {
+                action = (
+                  <div className="action-stack">
+                    <div className="payment-panel action-panel">
+                      <span>Emergency payment required</span>
+                      <strong>{formatCurrency(booking.paymentTotal)}</strong>
+                      <small>Record payment to activate the QR code for this emergency booking.</small>
+                    </div>
+                    <div className="button-row">
+                      <button className="primary-button" onClick={() => onPay(booking.id)} type="button">
+                        Record payment
+                      </button>
+                    </div>
+                  </div>
+                )
+              }
+
+              if ((status === 'approved' && paid) || status === 'not approved' || status === 'cancelled') {
+                action = (
+                  <div className="button-row">
+                    <button className="ghost-button" onClick={() => onClear(booking.id)} type="button">
+                      Clear row
+                    </button>
+                  </div>
+                )
+              }
+
+              return (
+                <BookingCard
+                  action={action}
+                  booking={booking}
+                  collapsible
+                  currentUser={currentUser}
+                  key={booking.id}
+                  showQr={status === 'approved' && paid}
+                  users={users}
+                />
+              )
+            })}
+          </div>
+        ) : (
+          <EmptyState copy="No emergency permission records are available yet." />
+        )}
+      </section>
+    </div>
+  )
+}
+
 function AcademicDashboardView({
   approvalBookings,
   currentUser,
@@ -1807,8 +2306,8 @@ function WardenDashboardView({ bookings, currentUser, onDecision, title = 'Warde
     <WardenApprovalQueue
       bookings={filtered}
       currentUser={currentUser}
-      onApprove={(id, specialFeedbackRecipientUsername = '') =>
-        onDecision(id, 'approved', '', specialFeedbackRecipientUsername)}
+      onApprove={(id, specialFeedbackRecipients = []) =>
+        onDecision(id, 'approved', '', specialFeedbackRecipients)}
       onReject={(id, reason) => onDecision(id, 'rejected', reason)}
       query={query}
       searchLabel="Search student details"
@@ -1954,7 +2453,7 @@ function SpecialFeedbackQueue({ bookings, currentUser, onSubmitFeedback, users }
 
   function openFeedbackDialog(booking) {
     setFeedbackTarget(booking)
-    setFeedbackMessage(booking.specialFeedbackMessage ?? '')
+    setFeedbackMessage('')
   }
 
   function closeFeedbackDialog() {
@@ -1978,13 +2477,13 @@ function SpecialFeedbackQueue({ bookings, currentUser, onSubmitFeedback, users }
       <div className="section-heading">
         <div>
           <div className="eyebrow">{currentUser.roleLabel}</div>
-          <h2>Special Feedback Requests</h2>
+          <h2>Warden Feedback Requests</h2>
         </div>
         <label className="search-field">
           <span>Search feedback requests</span>
           <input
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search by student, booking id, or special reason"
+            placeholder="Search by student, booking id, reason, or feedback"
             type="search"
             value={query}
           />
@@ -2011,7 +2510,7 @@ function SpecialFeedbackQueue({ bookings, currentUser, onSubmitFeedback, users }
           ))}
         </div>
       ) : (
-        <EmptyState copy="No special feedback requests are assigned to you right now." />
+        <EmptyState copy="No warden feedback requests are assigned to you right now." />
       )}
 
       {feedbackTarget ? (
@@ -2025,7 +2524,7 @@ function SpecialFeedbackQueue({ bookings, currentUser, onSubmitFeedback, users }
           >
             <div className="modal-header">
               <div>
-                <div className="eyebrow">Special Feedback</div>
+                <div className="eyebrow">Warden Feedback</div>
                 <h3 id={`special-feedback-modal-${feedbackTarget.id}`}>
                   Send feedback for {feedbackTarget.id}
                 </h3>
@@ -2078,7 +2577,7 @@ function WardenApprovalQueue({
   const [rejectTarget, setRejectTarget] = useState(null)
   const [rejectReason, setRejectReason] = useState('')
   const [approveTarget, setApproveTarget] = useState(null)
-  const [selectedFeedbackRecipient, setSelectedFeedbackRecipient] = useState('')
+  const [selectedFeedbackRecipients, setSelectedFeedbackRecipients] = useState([])
   const approveCandidates = approveTarget ? getSpecialFeedbackCandidateUsers(users, approveTarget) : []
 
   function openRejectDialog(booking) {
@@ -2109,27 +2608,32 @@ function WardenApprovalQueue({
     }
 
     const candidateUsers = getSpecialFeedbackCandidateUsers(users, booking)
-    const defaultRecipient =
-      candidateUsers.find((user) => user.username === booking.specialFeedbackRecipientUsername)?.username ??
-      candidateUsers[0]?.username ??
-      ''
+    const defaultRecipients = normalizeSpecialFeedbackRecipients(booking.specialFeedbackRecipients, booking.department)
 
     setApproveTarget(booking)
-    setSelectedFeedbackRecipient(defaultRecipient)
+    setSelectedFeedbackRecipients(defaultRecipients.length ? defaultRecipients : candidateUsers.slice(0, 1).map((user) => user.username))
   }
 
   function closeApproveDialog() {
     setApproveTarget(null)
-    setSelectedFeedbackRecipient('')
+    setSelectedFeedbackRecipients([])
   }
 
   function submitApproval() {
-    if (!approveTarget || !selectedFeedbackRecipient) {
+    if (!approveTarget || !selectedFeedbackRecipients.length) {
       return
     }
 
-    onApprove(approveTarget.id, selectedFeedbackRecipient)
+    onApprove(approveTarget.id, selectedFeedbackRecipients)
     closeApproveDialog()
+  }
+
+  function toggleFeedbackRecipient(username) {
+    setSelectedFeedbackRecipients((previous) =>
+      previous.includes(username)
+        ? previous.filter((value) => value !== username)
+        : [...previous, username],
+    )
   }
 
   return (
@@ -2187,7 +2691,7 @@ function WardenApprovalQueue({
           >
             <div className="modal-header">
               <div>
-                <div className="eyebrow">Special Booking Approval</div>
+                <div className="eyebrow">Warden Approval</div>
                 <h3 id={`approve-modal-${approveTarget.id}`}>Select feedback contact for {approveTarget.id}</h3>
               </div>
               <button className="ghost-button" onClick={closeApproveDialog} type="button">
@@ -2195,23 +2699,24 @@ function WardenApprovalQueue({
               </button>
             </div>
             <label className="field full-span">
-              <span>Academic staff member who should send feedback to the warden</span>
-              <select
-                onChange={(event) => setSelectedFeedbackRecipient(event.target.value)}
-                value={selectedFeedbackRecipient}
-              >
-                <option value="">Select academic staff member</option>
+              <span>Academic staff members who should send feedback to the warden</span>
+              <div className="selection-list">
                 {approveCandidates.map((person) => (
-                  <option key={person.username} value={person.username}>
-                    {`${person.roleLabel} - ${person.name}${person.department ? ` (${person.department})` : ''}`}
-                  </option>
+                  <label className="selection-item" key={person.username}>
+                    <input
+                      checked={selectedFeedbackRecipients.includes(person.username)}
+                      onChange={() => toggleFeedbackRecipient(person.username)}
+                      type="checkbox"
+                    />
+                    <span>{`${person.roleLabel} - ${person.name}${person.department ? ` (${person.department})` : ''}`}</span>
+                  </label>
                 ))}
-              </select>
+              </div>
             </label>
             <div className="button-row">
               <button
                 className="primary-button"
-                disabled={!selectedFeedbackRecipient}
+                disabled={!selectedFeedbackRecipients.length}
                 onClick={submitApproval}
                 type="button"
               >
@@ -2333,16 +2838,12 @@ function BookingCard({ action = null, booking, collapsible = false, currentUser 
   const academicReviewer = users.find((user) => user.username === booking.academicReviewedBy)
   const wardenReviewer = users.find((user) => user.username === booking.wardenReviewedBy)
   const academicApproverUsers = getAcademicApproverUsers(users, booking)
-  const specialFeedbackRecipient = users.find(
-    (user) => user.username === booking.specialFeedbackRecipientUsername,
-  )
   const specialFeedbackRequestedBy = users.find(
     (user) => user.username === booking.specialFeedbackRequestedBy,
   )
-  const specialFeedbackProvidedBy = users.find(
-    (user) => user.username === booking.specialFeedbackProvidedBy,
-  )
   const specialFeedbackContactUsers = getSpecialFeedbackContactUsers(users, booking)
+  const specialFeedbackEntries = getSpecialFeedbackEntries(booking)
+  const pendingSpecialFeedbackUsers = getPendingSpecialFeedbackUsers(users, booking)
   const wardenApproverUsers = getWardenApproverUsers(users, booking)
   const [isExpanded, setIsExpanded] = useState(!collapsible)
   const [isStaffModalOpen, setIsStaffModalOpen] = useState(false)
@@ -2355,13 +2856,13 @@ function BookingCard({ action = null, booking, collapsible = false, currentUser 
   const rejectionReason = getRejectionReason(booking)
   const specialFeedbackDetails =
     canViewSpecialFeedback &&
-    booking.workflow === 'special' &&
-    (booking.wardenStatus === 'approved' || booking.specialFeedbackRequestedAt || booking.specialFeedbackProvidedAt)
+    isWardenOnlyBooking &&
+    (booking.wardenStatus === 'approved' || booking.specialFeedbackRequestedAt || specialFeedbackEntries.length)
       ? [
           [
-            'Selected academic contact',
-            specialFeedbackRecipient
-              ? `${specialFeedbackRecipient.roleLabel} - ${specialFeedbackRecipient.name}`
+            'Selected academic contacts',
+            specialFeedbackContactUsers.length
+              ? formatApproverList(specialFeedbackContactUsers)
               : 'Not selected yet',
           ],
           [
@@ -2375,16 +2876,21 @@ function BookingCard({ action = null, booking, collapsible = false, currentUser 
             booking.specialFeedbackRequestedAt ? formatDate(booking.specialFeedbackRequestedAt) : 'Pending',
           ],
           [
-            'Feedback sent by',
-            specialFeedbackProvidedBy
-              ? `${specialFeedbackProvidedBy.roleLabel} - ${specialFeedbackProvidedBy.name}`
+            'Feedback responses',
+            specialFeedbackEntries.length
+              ? (
+                <DetailValueList
+                  values={specialFeedbackEntries.map((entry) => formatSpecialFeedbackEntry(entry, users))}
+                />
+              )
               : 'Pending',
           ],
           [
-            'Feedback sent date',
-            booking.specialFeedbackProvidedAt ? formatDate(booking.specialFeedbackProvidedAt) : 'Pending',
+            'Pending feedback from',
+            pendingSpecialFeedbackUsers.length
+              ? <DetailValueList values={pendingSpecialFeedbackUsers.map((person) => `${person.roleLabel} - ${person.name}`)} />
+              : 'All selected staff submitted feedback',
           ],
-          ['Feedback for warden', booking.specialFeedbackMessage || 'Pending'],
         ]
       : []
   const summaryLabel =
@@ -2398,9 +2904,11 @@ function BookingCard({ action = null, booking, collapsible = false, currentUser 
   const bookingTypeLabel =
     booking.workflow === 'special'
       ? 'Special reason booking'
-      : 'Academic TRF booking'
+      : booking.workflow === 'emergency'
+        ? 'Emergency permission booking'
+        : 'Academic TRF booking'
   const bookingSummaryDetails =
-    booking.workflow === 'special' && booking.specialReason
+    isWardenOnlyBooking && booking.specialReason
       ? `${formatDate(booking.checkIn)} to ${formatDate(booking.checkOut)} | Room ${booking.roomNumber}, Bed ${booking.bedNumber} | ${booking.specialReason}`
       : `${formatDate(booking.checkIn)} to ${formatDate(booking.checkOut)} | Room ${booking.roomNumber}, Bed ${booking.bedNumber}`
 
@@ -2464,7 +2972,10 @@ function BookingCard({ action = null, booking, collapsible = false, currentUser 
                 ['Department', booking.department || 'No'],
                 ['Subject course code', booking.courseCode || 'No'],
                 ['Academic activity', booking.academicActivity || 'No'],
-                ['Special reason', booking.specialReason || 'No'],
+                [
+                  booking.workflow === 'emergency' ? 'Emergency reason' : 'Special reason',
+                  booking.specialReason || 'No',
+                ],
               ]}
             />
 
@@ -3016,18 +3527,22 @@ function canAcademicUserReviewBooking(user, booking) {
 function canAcademicUserProvideSpecialFeedback(user, booking) {
   return (
     user.roleGroup === 'academic' &&
-    booking.workflow === 'special' &&
+    WARDEN_ONLY_WORKFLOWS.includes(booking.workflow) &&
     booking.wardenStatus === 'approved' &&
-    booking.specialFeedbackRecipientUsername === user.username
+    normalizeSpecialFeedbackRecipients(booking.specialFeedbackRecipients, booking.department).includes(user.username) &&
+    !hasSpecialFeedbackFromUser(booking, user.username)
   )
 }
 
 function canViewerSeeSpecialFeedback(currentUser, booking) {
-  if (!currentUser || booking.workflow !== 'special') {
+  if (!currentUser || !WARDEN_ONLY_WORKFLOWS.includes(booking.workflow)) {
     return false
   }
 
-  return currentUser.roleGroup === 'warden' || booking.specialFeedbackRecipientUsername === currentUser.username
+  return (
+    currentUser.roleGroup === 'warden' ||
+    normalizeSpecialFeedbackRecipients(booking.specialFeedbackRecipients, booking.department).includes(currentUser.username)
+  )
 }
 
 function isStudentCounselor(user) {
@@ -3079,7 +3594,34 @@ function getSpecialFeedbackCandidateUsers(users, booking) {
 }
 
 function getSpecialFeedbackContactUsers(users, booking) {
-  return users.filter((user) => user.username === booking.specialFeedbackRecipientUsername)
+  const recipientUsernames = normalizeSpecialFeedbackRecipients(booking.specialFeedbackRecipients, booking.department)
+  return users.filter((user) => recipientUsernames.includes(user.username))
+}
+
+function getSpecialFeedbackEntries(booking) {
+  return normalizeSpecialFeedbackEntries(booking.specialFeedbackEntries, booking.department)
+}
+
+function getPendingSpecialFeedbackUsers(users, booking) {
+  const submittedUsernames = new Set(getSpecialFeedbackEntries(booking).map((entry) => entry.actorUsername))
+  return getSpecialFeedbackContactUsers(users, booking).filter((user) => !submittedUsernames.has(user.username))
+}
+
+function hasSpecialFeedbackFromUser(booking, username) {
+  return getSpecialFeedbackEntries(booking).some((entry) => entry.actorUsername === username)
+}
+
+function upsertSpecialFeedbackEntry(entries, nextEntry) {
+  const normalizedEntries = normalizeSpecialFeedbackEntries(entries)
+  const remainingEntries = normalizedEntries.filter((entry) => entry.actorUsername !== nextEntry.actorUsername)
+  return [...remainingEntries, nextEntry].sort((left, right) => new Date(left.providedAt) - new Date(right.providedAt))
+}
+
+function formatSpecialFeedbackEntry(entry, users) {
+  const person = users.find((user) => user.username === entry.actorUsername)
+  const actorLabel = person ? `${person.roleLabel} - ${person.name}` : entry.actorUsername
+  const dateLabel = entry.providedAt ? formatDate(entry.providedAt) : 'Pending date'
+  return `${actorLabel} (${dateLabel}): ${entry.message}`
 }
 
 function getWardenApproverUsers(users, booking) {
@@ -3244,6 +3786,58 @@ function createInitialBookingForm(student) {
   }
 }
 
+function createInitialEmergencyForm() {
+  const now = new Date()
+  const tomorrow = new Date(now)
+  const dayAfter = new Date(now)
+  tomorrow.setDate(tomorrow.getDate() + 1)
+  dayAfter.setDate(dayAfter.getDate() + 2)
+
+  return {
+    name: '',
+    studentNumber: '',
+    registrationNumber: '',
+    gender: '',
+    department: '',
+    faculty: '',
+    degreeProgram: '',
+    email: '',
+    address: '',
+    homePhone: '',
+    mobilePhone: '',
+    checkIn: toIsoDate(tomorrow),
+    checkOut: toIsoDate(dayAfter),
+    roomNumber: '',
+    bedNumber: '',
+    specialReason: '',
+  }
+}
+
+function findStudentByEmergencyIdentity(users, studentNumber, registrationNumber) {
+  const normalizedStudentNumber = String(studentNumber ?? '').trim().toLowerCase()
+  const normalizedRegistrationNumber = String(registrationNumber ?? '').trim()
+
+  return users.find(
+    (user) =>
+      user.roleGroup === 'student' &&
+      (
+        user.username.toLowerCase() === normalizedStudentNumber ||
+        String(user.studentNumber ?? '').trim().toLowerCase() === normalizedStudentNumber ||
+        String(user.registrationNumber ?? '').trim() === normalizedRegistrationNumber
+      ),
+  ) ?? null
+}
+
+function upsertUser(users, nextUser) {
+  const existingIndex = users.findIndex((user) => user.username === nextUser.username)
+
+  if (existingIndex === -1) {
+    return [...users, nextUser]
+  }
+
+  return users.map((user) => (user.username === nextUser.username ? { ...user, ...nextUser } : user))
+}
+
 function normalizeSubjectValues(subjectValues) {
   if (Array.isArray(subjectValues)) {
     return subjectValues.map((value) => value.trim()).filter(Boolean)
@@ -3281,7 +3875,7 @@ function filterBookings(bookings, users, query) {
       booking.courseCode,
       booking.academicActivity,
       booking.specialReason,
-      booking.specialFeedbackMessage,
+      ...getSpecialFeedbackEntries(booking).map((entry) => entry.message),
       booking.academicDecisionReason,
       booking.wardenDecisionReason,
       `room ${booking.roomNumber}`,
@@ -3458,16 +4052,22 @@ function loadState() {
       paymentPaidAt: booking.paymentPaidAt ?? '',
       academicDecisionReason: booking.academicDecisionReason ?? '',
       wardenDecisionReason: booking.wardenDecisionReason ?? '',
-      specialFeedbackRecipientUsername: booking.specialFeedbackRecipientUsername
-        ? normalizeAcademicUsername(booking.specialFeedbackRecipientUsername, booking.department)
-        : '',
+      specialFeedbackRecipients: normalizeSpecialFeedbackRecipients(
+        booking.specialFeedbackRecipients ?? booking.specialFeedbackRecipientUsername ?? [],
+        booking.department,
+      ),
       specialFeedbackRequestedBy: booking.specialFeedbackRequestedBy ?? '',
       specialFeedbackRequestedAt: booking.specialFeedbackRequestedAt ?? '',
-      specialFeedbackMessage: booking.specialFeedbackMessage ?? '',
-      specialFeedbackProvidedBy: booking.specialFeedbackProvidedBy
-        ? normalizeAcademicUsername(booking.specialFeedbackProvidedBy, booking.department)
-        : '',
-      specialFeedbackProvidedAt: booking.specialFeedbackProvidedAt ?? '',
+      specialFeedbackEntries: normalizeSpecialFeedbackEntries(
+        booking.specialFeedbackEntries ??
+          buildLegacySpecialFeedbackEntries(
+            booking.specialFeedbackProvidedBy ?? '',
+            booking.specialFeedbackMessage ?? '',
+            booking.specialFeedbackProvidedAt ?? '',
+            booking.department,
+          ),
+        booking.department,
+      ),
       studentClearedAt: booking.studentClearedAt ?? '',
       academicClearedBy: booking.academicClearedBy ?? [],
       wardenClearedBy: booking.wardenClearedBy ?? [],
@@ -3520,6 +4120,60 @@ function normalizeAcademicUsername(username, department) {
   }
 
   return username ?? ''
+}
+
+function normalizeSpecialFeedbackRecipients(value, department = '') {
+  const normalizedValue = Array.isArray(value)
+    ? value
+    : typeof value === 'string' && value.trim().startsWith('[')
+      ? safeJsonParse(value, [])
+      : String(value ?? '')
+          .split(',')
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+
+  return [...new Set(
+    normalizedValue
+      .map((username) => normalizeAcademicUsername(username, department))
+      .filter(Boolean),
+  )]
+}
+
+function normalizeSpecialFeedbackEntries(entries, department = '') {
+  const normalizedEntries = Array.isArray(entries)
+    ? entries
+    : typeof entries === 'string' && entries.trim().startsWith('[')
+      ? safeJsonParse(entries, [])
+      : []
+
+  return normalizedEntries
+    .map((entry) => ({
+      actorUsername: normalizeAcademicUsername(entry?.actorUsername ?? '', department),
+      message: String(entry?.message ?? '').trim(),
+      providedAt: entry?.providedAt ?? '',
+    }))
+    .filter((entry) => entry.actorUsername && entry.message)
+    .sort((left, right) => new Date(left.providedAt || 0) - new Date(right.providedAt || 0))
+}
+
+function buildLegacySpecialFeedbackEntries(actorUsername, message, providedAt, department = '') {
+  if (!actorUsername || !message) {
+    return []
+  }
+
+  return [{
+    actorUsername: normalizeAcademicUsername(actorUsername, department),
+    message,
+    providedAt,
+  }]
+}
+
+function safeJsonParse(value, fallback) {
+  try {
+    return JSON.parse(value)
+  } catch {
+    return fallback
+  }
 }
 
 function getFallbackAcademicUsername(department) {

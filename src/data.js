@@ -52,7 +52,7 @@ export const RULE_GROUPS = [
   },
 ]
 
-export const WARDEN_ONLY_WORKFLOWS = ['special']
+export const WARDEN_ONLY_WORKFLOWS = ['special', 'emergency']
 export const DEPARTMENT_OPTIONS = [
   'Agricultural and Plantation Engineering',
   'Civil Engineering',
@@ -330,12 +330,21 @@ export function createInitialState() {
       wardenStatus: 'approved',
       wardenReviewedBy: 'subfemale',
       wardenReviewedAt: toIsoDate(addDays(today, -14)),
-      specialFeedbackRecipientUsername: 'counselor',
+      specialFeedbackRecipients: ['counselor', 'hodape'],
       specialFeedbackRequestedBy: 'subfemale',
       specialFeedbackRequestedAt: toIsoDate(addDays(today, -14)),
-      specialFeedbackMessage: 'Student counselor confirmed the medical note and asked the warden team to keep a return-to-hostel follow-up on file.',
-      specialFeedbackProvidedBy: 'counselor',
-      specialFeedbackProvidedAt: toIsoDate(addDays(today, -13)),
+      specialFeedbackEntries: [
+        {
+          actorUsername: 'counselor',
+          message: 'Student counselor confirmed the medical note and asked the warden team to keep a return-to-hostel follow-up on file.',
+          providedAt: toIsoDate(addDays(today, -13)),
+        },
+        {
+          actorUsername: 'hodape',
+          message: 'HOD acknowledged the emergency case and asked the warden to keep the department updated until checkout.',
+          providedAt: toIsoDate(addDays(today, -12)),
+        },
+      ],
       paymentStatus: 'unpaid',
     }),
     createBooking({
@@ -398,12 +407,10 @@ export function createInitialState() {
       courseCode: overrides.courseCode ?? '',
       academicActivity: overrides.academicActivity ?? '',
       specialReason: overrides.specialReason ?? '',
-      specialFeedbackRecipientUsername: overrides.specialFeedbackRecipientUsername ?? '',
+      specialFeedbackRecipients: overrides.specialFeedbackRecipients ?? [],
       specialFeedbackRequestedBy: overrides.specialFeedbackRequestedBy ?? '',
       specialFeedbackRequestedAt: overrides.specialFeedbackRequestedAt ?? '',
-      specialFeedbackMessage: overrides.specialFeedbackMessage ?? '',
-      specialFeedbackProvidedBy: overrides.specialFeedbackProvidedBy ?? '',
-      specialFeedbackProvidedAt: overrides.specialFeedbackProvidedAt ?? '',
+      specialFeedbackEntries: overrides.specialFeedbackEntries ?? [],
       homePhone: overrides.homePhone ?? '',
       mobilePhone: overrides.mobilePhone ?? '',
       paymentTotal: calculatePaymentTotal(requestedDays),

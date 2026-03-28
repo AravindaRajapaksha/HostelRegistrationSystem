@@ -29,6 +29,7 @@ import {
   addBookingClearance,
   addBookingReviewLogs,
   addScanLogs,
+  ensureBookingStorageReady,
   loadSupabaseAppState,
   saveBooking,
   saveBookings,
@@ -412,6 +413,7 @@ function App() {
 
     try {
       if (usingSupabase) {
+        await ensureBookingStorageReady({ workflow: 'emergency' })
         await saveUserProfile(nextStudent)
         await saveBooking(booking)
       }
@@ -2010,10 +2012,9 @@ function EmergencyPermissionView({
     : bedOptions[0]?.value ?? ''
 
   const pendingApprovals = bookings.filter((booking) => booking.wardenStatus === 'pending')
-  const visibleRecords = bookings.filter((booking) => {
-    const status = getCurrentStatus(booking)
-    return !isHistoryClearedForUser(booking, currentUser) && status !== 'pending warden'
-  })
+  const visibleRecords = bookings.filter(
+    (booking) => !isHistoryClearedForUser(booking, currentUser),
+  )
   const filteredRecords = filterBookings(visibleRecords, users, query)
   const pendingPayments = visibleRecords.filter(
     (booking) => getCurrentStatus(booking) === 'approved' && !isPaymentComplete(booking),
@@ -2032,7 +2033,11 @@ function EmergencyPermissionView({
 
     if (didCreate) {
       setForm(createInitialEmergencyForm())
+      scrollPageToTop('smooth')
+      return
     }
+
+    scrollPageToTop('smooth')
   }
 
   return (
@@ -2058,30 +2063,38 @@ function EmergencyPermissionView({
         <div className="form-heading">
           <div className="eyebrow">Emergency Student</div>
           <h3>Create emergency student and booking</h3>
+          <p className="form-note">
+            Required before submit: student name, student number, registration number, gender,
+            home contact, mobile contact, check-in, check-out, room, bed, and emergency reason.
+          </p>
         </div>
 
         <div className="form-grid">
           <Field
-            label="Student name"
+            label="Student name (required)"
             name="name"
+            required
             value={form.name}
             onChange={(value) => setForm((previous) => ({ ...previous, name: value }))}
           />
           <Field
-            label="Student number (S number)"
+            label="Student number (S number) (required)"
             name="studentNumber"
+            required
             value={form.studentNumber}
             onChange={(value) => setForm((previous) => ({ ...previous, studentNumber: value }))}
           />
           <Field
-            label="Registration number"
+            label="Registration number (required)"
             name="registrationNumber"
+            required
             value={form.registrationNumber}
             onChange={(value) => setForm((previous) => ({ ...previous, registrationNumber: value }))}
           />
           <SelectField
-            label="Gender"
+            label="Gender (required)"
             name="gender"
+            required
             value={form.gender}
             onChange={(value) => setForm((previous) => ({ ...previous, gender: value }))}
             options={[
@@ -2123,41 +2136,47 @@ function EmergencyPermissionView({
             onChange={(value) => setForm((previous) => ({ ...previous, email: value }))}
           />
           <Field
-            label="Home contact"
+            label="Home contact (required)"
             name="homePhone"
+            required
             value={form.homePhone}
             onChange={(value) => setForm((previous) => ({ ...previous, homePhone: value }))}
           />
           <Field
-            label="Mobile contact"
+            label="Mobile contact (required)"
             name="mobilePhone"
+            required
             value={form.mobilePhone}
             onChange={(value) => setForm((previous) => ({ ...previous, mobilePhone: value }))}
           />
           <Field
-            label="Check-in date"
+            label="Check-in date (required)"
             name="checkIn"
+            required
             type="date"
             value={form.checkIn}
             onChange={(value) => setForm((previous) => ({ ...previous, checkIn: value }))}
           />
           <Field
-            label="Check-out date"
+            label="Check-out date (required)"
             name="checkOut"
+            required
             type="date"
             value={form.checkOut}
             onChange={(value) => setForm((previous) => ({ ...previous, checkOut: value }))}
           />
           <SelectField
-            label="Room number"
+            label="Room number (required)"
             name="roomNumber"
+            required
             value={resolvedRoomNumber}
             onChange={(value) => setForm((previous) => ({ ...previous, roomNumber: value }))}
             options={roomOptions.length ? roomOptions : [{ value: '', label: 'No rooms available' }]}
           />
           <SelectField
-            label="Bed number"
+            label="Bed number (required)"
             name="bedNumber"
+            required
             value={resolvedBedNumber}
             onChange={(value) => setForm((previous) => ({ ...previous, bedNumber: value }))}
             options={bedOptions.length ? bedOptions : [{ value: '', label: 'No beds available' }]}
@@ -2169,8 +2188,9 @@ function EmergencyPermissionView({
             onChange={(value) => setForm((previous) => ({ ...previous, address: value }))}
           />
           <TextAreaField
-            label="Emergency reason"
+            label="Emergency reason (required)"
             name="specialReason"
+            required
             value={form.specialReason}
             onChange={(value) => setForm((previous) => ({ ...previous, specialReason: value }))}
           />
@@ -2602,7 +2622,7 @@ function WardenApprovalQueue({
   }
 
   function approveBooking(booking) {
-    if (booking.workflow !== 'special') {
+    if (!WARDEN_ONLY_WORKFLOWS.includes(booking.workflow)) {
       onApprove(booking.id)
       return
     }
@@ -2692,7 +2712,9 @@ function WardenApprovalQueue({
             <div className="modal-header">
               <div>
                 <div className="eyebrow">Warden Approval</div>
-                <h3 id={`approve-modal-${approveTarget.id}`}>Select feedback contact for {approveTarget.id}</h3>
+                <h3 id={`approve-modal-${approveTarget.id}`}>
+                  Select academic feedback contacts for {approveTarget.id}
+                </h3>
               </div>
               <button className="ghost-button" onClick={closeApproveDialog} type="button">
                 Close
@@ -2701,16 +2723,25 @@ function WardenApprovalQueue({
             <label className="field full-span">
               <span>Academic staff members who should send feedback to the warden</span>
               <div className="selection-list">
-                {approveCandidates.map((person) => (
-                  <label className="selection-item" key={person.username}>
-                    <input
-                      checked={selectedFeedbackRecipients.includes(person.username)}
-                      onChange={() => toggleFeedbackRecipient(person.username)}
-                      type="checkbox"
-                    />
-                    <span>{`${person.roleLabel} - ${person.name}${person.department ? ` (${person.department})` : ''}`}</span>
-                  </label>
-                ))}
+                {approveCandidates.length ? (
+                  approveCandidates.map((person) => (
+                    <label
+                      className={`selection-item ${
+                        selectedFeedbackRecipients.includes(person.username) ? 'selected' : ''
+                      }`}
+                      key={person.username}
+                    >
+                      <input
+                        checked={selectedFeedbackRecipients.includes(person.username)}
+                        onChange={() => toggleFeedbackRecipient(person.username)}
+                        type="checkbox"
+                      />
+                      <span>{`${person.roleLabel} - ${person.name}${person.department ? ` (${person.department})` : ''}`}</span>
+                    </label>
+                  ))
+                ) : (
+                  <span>No academic staff are available for this booking yet.</span>
+                )}
               </div>
             </label>
             <div className="button-row">
@@ -3393,20 +3424,26 @@ function StatusPill({ status }) {
   return <span className={className}>{status}</span>
 }
 
-function Field({ label, name, onChange, type = 'text', value }) {
+function Field({ label, name, onChange, required = false, type = 'text', value }) {
   return (
     <label className="field">
       <span>{label}</span>
-      <input name={name} onChange={(event) => onChange(event.target.value)} type={type} value={value} />
+      <input
+        name={name}
+        onChange={(event) => onChange(event.target.value)}
+        required={required}
+        type={type}
+        value={value}
+      />
     </label>
   )
 }
 
-function SelectField({ label, name, onChange, options, value }) {
+function SelectField({ label, name, onChange, options, required = false, value }) {
   return (
     <label className="field">
       <span>{label}</span>
-      <select name={name} onChange={(event) => onChange(event.target.value)} value={value}>
+      <select name={name} onChange={(event) => onChange(event.target.value)} required={required} value={value}>
         {options.map((option) => (
           <option key={`${name}-${option.value}`} value={option.value}>
             {option.label}
@@ -3417,11 +3454,17 @@ function SelectField({ label, name, onChange, options, value }) {
   )
 }
 
-function TextAreaField({ label, name, onChange, value }) {
+function TextAreaField({ label, name, onChange, required = false, value }) {
   return (
     <label className="field full-span">
       <span>{label}</span>
-      <textarea name={name} onChange={(event) => onChange(event.target.value)} rows="5" value={value} />
+      <textarea
+        name={name}
+        onChange={(event) => onChange(event.target.value)}
+        required={required}
+        rows="5"
+        value={value}
+      />
     </label>
   )
 }
@@ -4033,7 +4076,7 @@ function loadState() {
 
     const parsed = JSON.parse(saved)
     const defaults = createInitialState()
-    const resolvedUsers = defaults.users
+    const resolvedUsers = mergeStoredUsers(defaults.users, parsed.users)
     const bookings = (parsed.bookings ?? defaults.bookings).map((booking) => ({
       ...booking,
       requestedDays:
@@ -4092,6 +4135,28 @@ function loadState() {
   } catch {
     return createInitialState()
   }
+}
+
+function mergeStoredUsers(defaultUsers, storedUsers) {
+  const mergedUsers = new Map(defaultUsers.map((user) => [user.username, { ...user }]))
+
+  ;(Array.isArray(storedUsers) ? storedUsers : []).forEach((user) => {
+    const username = String(user?.username ?? '').trim()
+
+    if (!username) {
+      return
+    }
+
+    const previous = mergedUsers.get(username) ?? {}
+    mergedUsers.set(username, {
+      ...previous,
+      ...user,
+      username,
+      password: user.password ?? previous.password ?? username,
+    })
+  })
+
+  return Array.from(mergedUsers.values())
 }
 
 function normalizeDepartment(department) {

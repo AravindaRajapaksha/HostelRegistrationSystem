@@ -23,8 +23,31 @@ export function usesSupabaseBackend() {
   return hasSupabaseConfig
 }
 
+export async function ensureBookingStorageReady({ workflow = '' } = {}) {
+  const supabase = requireSupabase()
+  const schemaCheck = await supabase
+    .from('booking_requests')
+    .select('id, workflow, special_feedback_recipient_usernames, special_feedback_entries')
+    .limit(1)
+
+  throwOnResultError(schemaCheck, 'verify the booking storage schema')
+
+  if (!workflow) {
+    return
+  }
+
+  const workflowCheck = await supabase
+    .from('booking_requests')
+    .select('id')
+    .eq('workflow', workflow)
+    .limit(1)
+
+  throwOnResultError(workflowCheck, `verify ${workflow} workflow support`)
+}
+
 export async function loadSupabaseAppState({ iotLogUrl = '' } = {}) {
   const supabase = requireSupabase()
+  await ensureBookingStorageReady()
 
   const [departmentsResult, profilesResult, bookingsResult, clearancesResult, scanLogsResult] =
     await Promise.all([
@@ -516,6 +539,23 @@ function toDbHostelGender(value) {
 
 function throwOnResultError(result, action) {
   if (result.error) {
-    throw new Error(`Supabase could not ${action}: ${result.error.message}`)
+    throw new Error(formatSupabaseErrorMessage(result.error, action))
   }
+}
+
+function formatSupabaseErrorMessage(error, action) {
+  const message = String(error?.message ?? '')
+
+  if (
+    message.includes('booking_requests.special_feedback_recipient_usernames does not exist') ||
+    message.includes('booking_requests.special_feedback_entries does not exist')
+  ) {
+    return 'Live Supabase schema is outdated. Run supabase/website_schema.sql on the current database, then restart the app. The booking_requests table is missing the new feedback columns.'
+  }
+
+  if (message.includes('invalid input value for enum booking_workflow: "emergency"')) {
+    return 'Live Supabase schema is outdated. Run supabase/website_schema.sql on the current database, then restart the app. The booking_workflow enum does not include emergency yet.'
+  }
+
+  return `Supabase could not ${action}: ${message}`
 }

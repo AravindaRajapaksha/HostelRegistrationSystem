@@ -1067,10 +1067,11 @@ function App() {
     setAppState((previous) => ({
       ...previous,
       bookings: [],
+      iotLogUrl: '',
       scanLogs: [],
     }))
     setFeedback(
-      'Booking requests, approval history, clearance history, and QR scan logs were reset. Student profiles and master tables were kept.',
+      'Booking requests, approval history, clearance history, QR scan logs, and the saved scanner log URL were reset. Student profiles and master tables were kept.',
     )
     setActiveView('home')
     return true

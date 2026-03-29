@@ -1177,6 +1177,7 @@ function App() {
         const addUserUrl = new URL('/get', `${parsedUrl.origin}/`)
         addUserUrl.searchParams.set('qrCode', booking.qrValue)
         addUserUrl.searchParams.set('role', 'Student')
+        addUserUrl.searchParams.set('type', 'Student')
 
         const addResponse = await fetch(`/api/iot-log?url=${encodeURIComponent(addUserUrl.toString())}`)
 
@@ -3625,6 +3626,7 @@ function ScanConfirmationsView({
       return {
         ...log,
         booking,
+        role: resolveScanRole(log.role, student?.roleLabel),
         student,
       }
     })
@@ -4596,13 +4598,31 @@ function parseIotLogLine(line, bookings, users, deviceName) {
     scannedAt: `${date}T${time}`,
     qrValue,
     qrCodeName: booking?.id ?? extractBookingId(qrValue) ?? 'Unknown QR',
-    role: scannedRole || student?.roleLabel || 'unknown',
+    role: resolveScanRole(scannedRole, student?.roleLabel),
     result: verification.result,
     message: verification.message,
     bookingId: booking?.id ?? '',
     studentUsername: booking?.studentUsername ?? '',
     deviceName: deviceName.trim() || 'ESP32-CAM QR Scanner',
   }
+}
+
+function resolveScanRole(scannedRole, fallbackRole = '') {
+  const normalizedRole = String(scannedRole ?? '').trim()
+  const normalizedLookup = normalizedRole.toLowerCase()
+
+  if (
+    !normalizedRole ||
+    normalizedLookup === 'unknown' ||
+    normalizedLookup === 'n/a' ||
+    normalizedLookup === 'na' ||
+    normalizedLookup === 'null' ||
+    normalizedLookup === 'undefined'
+  ) {
+    return fallbackRole || 'unknown'
+  }
+
+  return normalizedRole
 }
 
 function getScanVerification(booking) {
@@ -4666,7 +4686,7 @@ function mergeScanLogs(existingLogs, importedLogs, onMerged = () => {}) {
 }
 
 function createScanLogKey(log) {
-  return [log.scannedAt, log.qrValue, log.role, log.deviceName].join('|')
+  return [log.scannedAt, log.qrValue, log.deviceName].join('|')
 }
 
 function sortRecentFirst(left, right) {

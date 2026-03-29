@@ -4136,7 +4136,8 @@ function getRegularAcademicReviewUsers(users, booking) {
 
   const hod = getDepartmentHod(users, booking.department)
   const coordinator = getDepartmentAcademicCoordinator(users, booking.department)
-  const reviewTeam = [hod, coordinator]
+  const counselor = users.find((user) => isStudentCounselor(user)) ?? null
+  const reviewTeam = [hod, coordinator, counselor]
     .filter(Boolean)
     .filter((user, index, collection) => collection.findIndex((entry) => entry.username === user.username) === index)
 
@@ -4147,8 +4148,15 @@ function getRegularAcademicReviewUsers(users, booking) {
   return users.filter(
     (user) =>
       user.roleGroup === 'academic' &&
-      user.department === booking.department &&
-      (user.roleLabel === 'Head of Department (HOD)' || user.roleLabel === 'Academic coordinator'),
+      (
+        user.department === booking.department ||
+        isStudentCounselor(user)
+      ) &&
+      (
+        user.roleLabel === 'Head of Department (HOD)' ||
+        user.roleLabel === 'Academic coordinator' ||
+        isStudentCounselor(user)
+      ),
   )
 }
 

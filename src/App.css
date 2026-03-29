@@ -737,6 +737,14 @@ h4 {
   width: min(360px, 100%);
 }
 
+.section-heading-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-end;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
 .scan-auto-note {
   margin-top: 1rem;
   color: var(--muted);
@@ -977,49 +985,6 @@ h4 {
   color: var(--muted);
 }
 
-.danger-panel {
-  border-color: rgba(185, 28, 28, 0.22);
-  background:
-    linear-gradient(180deg, rgba(255, 250, 250, 0.98), rgba(255, 238, 238, 0.92));
-}
-
-.danger-copy {
-  color: #8a3a3a;
-  max-width: 72ch;
-}
-
-.danger-actions {
-  display: grid;
-  gap: 0.85rem;
-}
-
-.danger-button {
-  border: none;
-  border-radius: 999px;
-  padding: 0.9rem 1.5rem;
-  background: linear-gradient(135deg, #b42318, #d23f2a);
-  color: #fff;
-  font-weight: 700;
-  box-shadow: 0 16px 28px rgba(185, 28, 28, 0.22);
-  transition:
-    transform 0.18s ease,
-    box-shadow 0.18s ease,
-    filter 0.18s ease;
-}
-
-.danger-button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 20px 32px rgba(185, 28, 28, 0.28);
-  filter: brightness(1.02);
-}
-
-.danger-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.7;
-  transform: none;
-  box-shadow: none;
-}
-
 .status-pill {
   border-radius: 999px;
   padding: 0.55rem 0.8rem;
@@ -1144,6 +1109,7 @@ h4 {
   }
 
   .search-field,
+  .section-heading-actions,
   .action-panel,
   .form-toggle .toggle {
     width: 100%;

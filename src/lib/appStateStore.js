@@ -145,6 +145,24 @@ export async function addBookingClearance(clearance) {
   throwOnResultError(result, `save booking clearance ${clearance.bookingId}`)
 }
 
+export async function addBookingClearances(clearances) {
+  if (!clearances.length) {
+    return
+  }
+
+  const supabase = requireSupabase()
+  const result = await supabase.from('booking_clearances').upsert(
+    clearances.map((clearance) => ({
+      booking_id: clearance.bookingId,
+      cleared_by_username: clearance.clearedByUsername,
+      role_group: clearance.roleGroup,
+      cleared_at: clearance.clearedAt,
+    })),
+  )
+
+  throwOnResultError(result, 'save booking clearances')
+}
+
 export async function addScanLogs(scanLogs) {
   if (!scanLogs.length) {
     return
@@ -180,22 +198,6 @@ export async function clearQrScanLogs() {
     .not('id', 'is', null)
 
   throwOnResultError(result, 'clear QR scan logs')
-}
-
-export async function resetWorkflowData() {
-  const supabase = requireSupabase()
-
-  const scanLogDeleteResult = await supabase
-    .from('qr_scan_logs')
-    .delete()
-    .not('id', 'is', null)
-  throwOnResultError(scanLogDeleteResult, 'reset QR scan logs')
-
-  const bookingDeleteResult = await supabase
-    .from('booking_requests')
-    .delete()
-    .not('id', 'is', null)
-  throwOnResultError(bookingDeleteResult, 'reset booking requests')
 }
 
 const PROFILE_COLUMNS = [

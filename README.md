@@ -56,7 +56,6 @@ VITE_IOT_LOG_URL=http://192.168.1.50/view-log
 When this URL is configured, the website can:
 
 - read `/view-log` to import QR scan confirmations into the warden page
-- clear the ESP32 scan log during workflow reset
 - sync approved-and-paid booking QR values into the ESP32 `users.txt` access list without changing the firmware
 
 7. Start the frontend:

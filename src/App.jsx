@@ -26,13 +26,12 @@ import {
   toIsoDate,
 } from './data'
 import {
-  addBookingClearance,
+  addBookingClearances,
   addBookingReviewLogs,
   addScanLogs,
   clearQrScanLogs,
   ensureBookingStorageReady,
   loadSupabaseAppState,
-  resetWorkflowData,
   saveBooking,
   saveBookings,
   saveUserProfile,
@@ -917,77 +916,124 @@ function App() {
   }
 
   async function clearStudentBookingHistory(bookingId) {
+    return clearStudentBookingHistoryEntries([bookingId])
+  }
+
+  async function clearStudentBookingHistoryEntries(bookingIds) {
     if (!currentUser || currentUser.roleGroup !== 'student') {
-      return
+      return 0
     }
 
-    const targetBooking = appState.bookings.find(
-      (booking) => booking.id === bookingId && booking.studentUsername === currentUser.username,
+    const requestedBookingIds = [...new Set(bookingIds)]
+    const candidateBookings = appState.bookings.filter(
+      (booking) =>
+        requestedBookingIds.includes(booking.id) &&
+        booking.studentUsername === currentUser.username &&
+        !booking.studentClearedAt,
     )
 
-    if (!targetBooking) {
-      return
+    if (!candidateBookings.length) {
+      if (requestedBookingIds.length === 1) {
+        setFeedback(`Booking ${requestedBookingIds[0]} cannot be cleared from history yet.`)
+      } else {
+        setFeedback('No clearable student history rows were found.')
+      }
+      return 0
     }
 
-    const status = getCurrentStatus(targetBooking)
-    const canClear = (status === 'approved' && isPaymentComplete(targetBooking)) || status === 'cancelled'
+    const clearableBookings = candidateBookings.filter(canStudentClearBookingHistory)
 
-    if (!canClear) {
-      setFeedback(`Booking ${bookingId} cannot be cleared from history yet.`)
-      return
+    if (!clearableBookings.length) {
+      if (requestedBookingIds.length === 1) {
+        setFeedback(`Booking ${requestedBookingIds[0]} cannot be cleared from history yet.`)
+      } else {
+        setFeedback('No clearable student history rows were found.')
+      }
+      return 0
     }
 
-    const updatedBooking = {
-      ...targetBooking,
-      studentClearedAt: new Date().toISOString(),
-    }
+    const clearedAt = new Date().toISOString()
+    const updatedBookings = clearableBookings.map((booking) => ({
+      ...booking,
+      studentClearedAt: clearedAt,
+    }))
+    const updatedBookingMap = new Map(updatedBookings.map((booking) => [booking.id, booking]))
 
     try {
       if (usingSupabase) {
-        await saveBooking(updatedBooking)
+        await saveBookings(updatedBookings)
       }
     } catch (error) {
       setFeedback(error.message)
-      return
+      return 0
     }
 
     setAppState((previous) => ({
       ...previous,
       bookings: previous.bookings.map((booking) => {
-        if (booking.id !== bookingId || booking.studentUsername !== currentUser.username) {
-          return booking
-        }
-
-        return updatedBooking
+        return updatedBookingMap.get(booking.id) ?? booking
       }),
     }))
 
-    setFeedback(`Booking ${bookingId} was cleared from your history.`)
+    if (updatedBookings.length === 1 && requestedBookingIds.length === 1) {
+      setFeedback(`Booking ${updatedBookings[0].id} was cleared from your history.`)
+      return 1
+    }
+
+    const skippedCount = candidateBookings.length - updatedBookings.length
+    setFeedback(
+      skippedCount
+        ? `${updatedBookings.length} booking history row(s) were cleared. ${skippedCount} row(s) are still active and were kept.`
+        : `${updatedBookings.length} booking history row(s) were cleared from your history.`,
+    )
+    return updatedBookings.length
   }
 
   async function clearAcademicBookingHistory(bookingId) {
+    return clearAcademicBookingHistoryEntries([bookingId])
+  }
+
+  async function clearAcademicBookingHistoryEntries(bookingIds) {
     if (!currentUser || currentUser.roleGroup !== 'academic') {
-      return
+      return 0
     }
+
+    const requestedBookingIds = [...new Set(bookingIds)]
+    const targetBookings = appState.bookings.filter(
+      (booking) =>
+        requestedBookingIds.includes(booking.id) &&
+        !isHistoryClearedForUser(booking, currentUser),
+    )
+
+    if (!targetBookings.length) {
+      setFeedback('No academic history rows were available to clear.')
+      return 0
+    }
+
+    const clearedAt = new Date().toISOString()
 
     try {
       if (usingSupabase) {
-        await addBookingClearance({
-          bookingId,
-          clearedByUsername: currentUser.username,
-          roleGroup: 'academic',
-          clearedAt: new Date().toISOString(),
-        })
+        await addBookingClearances(
+          targetBookings.map((booking) => ({
+            bookingId: booking.id,
+            clearedByUsername: currentUser.username,
+            roleGroup: 'academic',
+            clearedAt,
+          })),
+        )
       }
     } catch (error) {
       setFeedback(error.message)
-      return
+      return 0
     }
+
+    const targetBookingIdSet = new Set(targetBookings.map((booking) => booking.id))
 
     setAppState((previous) => ({
       ...previous,
       bookings: previous.bookings.map((booking) => {
-        if (booking.id !== bookingId) {
+        if (!targetBookingIdSet.has(booking.id)) {
           return booking
         }
 
@@ -998,32 +1044,60 @@ function App() {
       }),
     }))
 
-    setFeedback(`Booking ${bookingId} was cleared from your academic history.`)
+    if (targetBookings.length === 1 && requestedBookingIds.length === 1) {
+      setFeedback(`Booking ${targetBookings[0].id} was cleared from your academic history.`)
+      return 1
+    }
+
+    setFeedback(`${targetBookings.length} booking history row(s) were cleared from your academic history.`)
+    return targetBookings.length
   }
 
   async function clearWardenBookingHistory(bookingId) {
+    return clearWardenBookingHistoryEntries([bookingId])
+  }
+
+  async function clearWardenBookingHistoryEntries(bookingIds) {
     if (!currentUser || currentUser.roleGroup !== 'warden') {
-      return
+      return 0
     }
+
+    const requestedBookingIds = [...new Set(bookingIds)]
+    const targetBookings = appState.bookings.filter(
+      (booking) =>
+        requestedBookingIds.includes(booking.id) &&
+        !isHistoryClearedForUser(booking, currentUser),
+    )
+
+    if (!targetBookings.length) {
+      setFeedback('No warden history rows were available to clear.')
+      return 0
+    }
+
+    const clearedAt = new Date().toISOString()
 
     try {
       if (usingSupabase) {
-        await addBookingClearance({
-          bookingId,
-          clearedByUsername: currentUser.username,
-          roleGroup: 'warden',
-          clearedAt: new Date().toISOString(),
-        })
+        await addBookingClearances(
+          targetBookings.map((booking) => ({
+            bookingId: booking.id,
+            clearedByUsername: currentUser.username,
+            roleGroup: 'warden',
+            clearedAt,
+          })),
+        )
       }
     } catch (error) {
       setFeedback(error.message)
-      return
+      return 0
     }
+
+    const targetBookingIdSet = new Set(targetBookings.map((booking) => booking.id))
 
     setAppState((previous) => ({
       ...previous,
       bookings: previous.bookings.map((booking) => {
-        if (booking.id !== bookingId) {
+        if (!targetBookingIdSet.has(booking.id)) {
           return booking
         }
 
@@ -1034,7 +1108,13 @@ function App() {
       }),
     }))
 
-    setFeedback(`Booking ${bookingId} was cleared from your warden history.`)
+    if (targetBookings.length === 1 && requestedBookingIds.length === 1) {
+      setFeedback(`Booking ${targetBookings[0].id} was cleared from your warden history.`)
+      return 1
+    }
+
+    setFeedback(`${targetBookings.length} booking history row(s) were cleared from your warden history.`)
+    return targetBookings.length
   }
 
   function updateIotLogUrl(nextUrl) {
@@ -1270,56 +1350,6 @@ function App() {
     return true
   }
 
-  async function resetAllWorkflowData() {
-    if (!currentUser || currentUser.roleGroup !== 'warden' || currentUser.roleLabel !== 'Warden') {
-      setFeedback('Only the main warden can reset the booking workflow data.')
-      return false
-    }
-
-    const configuredIotLogUrl = resolveIotLogUrl(appState.iotLogUrl)
-    let scannerResetAttempted = false
-    let scannerLogCleared = false
-    let scannerUsersCleared = false
-
-    try {
-      if (usingSupabase) {
-        await resetWorkflowData()
-        const scannerReset = await clearIotDeviceLog(configuredIotLogUrl)
-        scannerResetAttempted = scannerReset.attempted
-        scannerLogCleared = scannerReset.cleared
-        const userReset = await syncApprovedBookingsToIot({
-          targetUrl: configuredIotLogUrl,
-          bookings: [],
-          silent: true,
-        })
-        scannerUsersCleared = userReset.cleared
-        const remoteState = await fetchRemoteState(configuredIotLogUrl)
-        setAppState(remoteState)
-      } else {
-        setAppState((previous) => ({
-          ...previous,
-          bookings: [],
-          reviewLogs: [],
-          iotLogUrl: configuredIotLogUrl,
-          scanLogs: [],
-        }))
-      }
-    } catch (error) {
-      setFeedback(error.message)
-      return false
-    }
-    const resetMessage = scannerLogCleared
-      ? scannerUsersCleared
-        ? 'Booking requests, approval history, clearance history, and QR scan logs were reset. The ESP32 scan log and approved-student access list were also cleared.'
-        : 'Booking requests, approval history, clearance history, and QR scan logs were reset. The ESP32 scan log was cleared, but the approved-student access list could not be refreshed.'
-      : scannerResetAttempted
-        ? 'Booking requests, approval history, clearance history, and QR scan logs were reset. The ESP32 scan log could not be cleared, so old device scan rows may return until the ESP32 log is cleared.'
-        : 'Booking requests, approval history, clearance history, and QR scan logs were reset. Student profiles and master tables were kept.'
-    setFeedback(resetMessage)
-    setActiveView('home')
-    return true
-  }
-
   if (!currentUser) {
     return (
       <LoginScreen
@@ -1354,12 +1384,14 @@ function App() {
         onAcademicSpecialFeedback: submitSpecialFeedback,
         onCancelBooking: cancelBooking,
         onClearAcademicBooking: clearAcademicBookingHistory,
+        onClearAcademicHistory: clearAcademicBookingHistoryEntries,
         onClearStudentBooking: clearStudentBookingHistory,
+        onClearStudentHistory: clearStudentBookingHistoryEntries,
         onClearWardenBooking: clearWardenBookingHistory,
+        onClearWardenHistory: clearWardenBookingHistoryEntries,
         onClearQrConfirmations: clearQrConfirmationHistory,
         onPayBooking: payBooking,
         onRecordEmergencyPayment: recordEmergencyPayment,
-        onResetWorkflowData: resetAllWorkflowData,
         onSubmitBooking: submitBooking,
         onSyncIotAccess: syncApprovedBookingsToIot,
         onSyncIotLog: syncIotLogFromUrl,
@@ -1379,12 +1411,14 @@ function renderView({
   onAcademicSpecialFeedback,
   onCancelBooking,
   onClearAcademicBooking,
+  onClearAcademicHistory,
   onClearStudentBooking,
+  onClearStudentHistory,
   onClearWardenBooking,
+  onClearWardenHistory,
   onClearQrConfirmations,
   onPayBooking,
   onRecordEmergencyPayment,
-  onResetWorkflowData,
   onSubmitBooking,
   onSyncIotAccess,
   onSyncIotLog,
@@ -1422,13 +1456,14 @@ function renderView({
           currentUser={currentUser}
           onCancel={onCancelBooking}
           onClear={onClearStudentBooking}
+          onClearHistory={onClearStudentHistory}
           onPay={onPayBooking}
           users={appState.users}
         />
       )
     }
 
-    return <HomeView currentUser={currentUser} onResetWorkflowData={onResetWorkflowData} users={appState.users} />
+    return <HomeView currentUser={currentUser} users={appState.users} />
   }
 
   if (currentUser.roleGroup === 'academic') {
@@ -1460,6 +1495,7 @@ function renderView({
         <DecisionListView
           bookings={relevant.filter((booking) => getAcademicDecisionForUser(booking, currentUser) === 'approved')}
           onClear={onClearAcademicBooking}
+          onClearHistory={onClearAcademicHistory}
           currentUser={currentUser}
           emptyCopy="No approved requests are available yet."
           title="Approved Requests"
@@ -1473,6 +1509,7 @@ function renderView({
         <DecisionListView
           bookings={relevant.filter((booking) => getAcademicDecisionForUser(booking, currentUser) === 'rejected')}
           onClear={onClearAcademicBooking}
+          onClearHistory={onClearAcademicHistory}
           currentUser={currentUser}
           emptyCopy="No not-approved requests are available yet."
           title="Not-Approved Requests"
@@ -1481,7 +1518,7 @@ function renderView({
       )
     }
 
-    return <HomeView currentUser={currentUser} onResetWorkflowData={onResetWorkflowData} users={appState.users} />
+    return <HomeView currentUser={currentUser} users={appState.users} />
   }
 
   const relevant = appState.bookings
@@ -1524,6 +1561,7 @@ function renderView({
       <DecisionListView
         bookings={relevant.filter((booking) => getCurrentStatus(booking) === 'approved')}
         onClear={onClearWardenBooking}
+        onClearHistory={onClearWardenHistory}
         currentUser={currentUser}
         emptyCopy="No approved TRF student details are available yet."
         title="TRF Student Details"
@@ -1537,6 +1575,7 @@ function renderView({
       <DecisionListView
         bookings={relevant.filter((booking) => getCurrentStatus(booking) === 'not approved')}
         onClear={onClearWardenBooking}
+        onClearHistory={onClearWardenHistory}
         currentUser={currentUser}
         emptyCopy="No not-approved requests are available yet."
         title="Not-Approved Requests"
@@ -1568,6 +1607,7 @@ function renderView({
         bookings={relevant.filter((booking) => booking.workflow === 'emergency')}
         currentUser={currentUser}
         onClear={onClearWardenBooking}
+        onClearHistory={onClearWardenHistory}
         onCreate={onCreateEmergencyBooking}
         onDecision={onWardenDecision}
         onPay={onRecordEmergencyPayment}
@@ -1577,7 +1617,7 @@ function renderView({
     )
   }
 
-  return <HomeView currentUser={currentUser} onResetWorkflowData={onResetWorkflowData} users={appState.users} />
+  return <HomeView currentUser={currentUser} users={appState.users} />
 }
 
 function LoginScreen({ users, onLogin }) {
@@ -1787,30 +1827,11 @@ function PortalShell({
   )
 }
 
-function HomeView({ currentUser, onResetWorkflowData, users }) {
+function HomeView({ currentUser, users }) {
   const warden = users.find((user) => user.username === 'warden')
   const subMale = users.find((user) => user.username === 'submale')
   const subFemale = users.find((user) => user.username === 'subfemale')
   const counselor = users.find((user) => isStudentCounselor(user))
-  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false)
-  const [isResettingData, setIsResettingData] = useState(false)
-
-  async function handleResetWorkflowData() {
-    if (!onResetWorkflowData) {
-      return
-    }
-
-    setIsResettingData(true)
-
-    try {
-      const didReset = await onResetWorkflowData()
-      if (didReset) {
-        setIsResetConfirmOpen(false)
-      }
-    } finally {
-      setIsResettingData(false)
-    }
-  }
 
   if (currentUser.roleGroup === 'student') {
     return (
@@ -1909,53 +1930,6 @@ function HomeView({ currentUser, onResetWorkflowData, users }) {
           </div>
         </article>
       </section>
-
-      {currentUser.roleLabel === 'Warden' ? (
-        <article className="panel-card danger-panel">
-          <div className="section-heading">
-            <div>
-              <div className="eyebrow">Database Reset</div>
-              <h3>Reset booking workflow data</h3>
-              <p className="danger-copy">
-                This clears `booking_requests`, approval history, clearance history, and `qr_scan_logs`.
-                Student profiles, rooms, departments, and hostel settings stay in the database.
-              </p>
-            </div>
-          </div>
-
-          {isResetConfirmOpen ? (
-            <div className="danger-actions">
-              <p className="danger-copy">
-                Confirm reset? This will remove all booking requests and QR confirmation history from the website and database.
-              </p>
-              <div className="button-row">
-                <button
-                  className="danger-button"
-                  disabled={isResettingData}
-                  onClick={handleResetWorkflowData}
-                  type="button"
-                >
-                  {isResettingData ? 'Resetting...' : 'Confirm reset'}
-                </button>
-                <button
-                  className="ghost-button"
-                  disabled={isResettingData}
-                  onClick={() => setIsResetConfirmOpen(false)}
-                  type="button"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="button-row">
-              <button className="ghost-button" onClick={() => setIsResetConfirmOpen(true)} type="button">
-                Reset booking requests and logs
-              </button>
-            </div>
-          )}
-        </article>
-      ) : null}
     </div>
   )
 }
@@ -2238,7 +2212,8 @@ function StudentBookingForm({ bookings, student, onSubmit }) {
   )
 }
 
-function StudentBookingsView({ bookings, currentUser, onCancel, onClear, onPay, users }) {
+function StudentBookingsView({ bookings, currentUser, onCancel, onClear, onClearHistory, onPay, users }) {
+  const [isClearingHistory, setIsClearingHistory] = useState(false)
   const visibleBookings = bookings.filter((booking) => {
     const status = getCurrentStatus(booking)
     return (
@@ -2250,6 +2225,29 @@ function StudentBookingsView({ bookings, currentUser, onCancel, onClear, onPay, 
         status === 'cancelled')
     )
   })
+  const clearableBookings = visibleBookings.filter(canStudentClearBookingHistory)
+
+  async function handleClearHistory() {
+    if (!onClearHistory || !clearableBookings.length) {
+      return
+    }
+
+    const shouldClear = window.confirm(
+      'Clear all completed booking rows from this history? Pending rows will be kept.',
+    )
+
+    if (!shouldClear) {
+      return
+    }
+
+    setIsClearingHistory(true)
+
+    try {
+      await onClearHistory(clearableBookings.map((booking) => booking.id))
+    } finally {
+      setIsClearingHistory(false)
+    }
+  }
 
   return (
     <section className="panel-card">
@@ -2258,6 +2256,18 @@ function StudentBookingsView({ bookings, currentUser, onCancel, onClear, onPay, 
           <div className="eyebrow">My bookings</div>
           <h2>Submitted bookings, approvals, and payment</h2>
         </div>
+        {clearableBookings.length ? (
+          <div className="button-row">
+            <button
+              className="ghost-button"
+              disabled={isClearingHistory}
+              onClick={handleClearHistory}
+              type="button"
+            >
+              {isClearingHistory ? 'Clearing...' : 'Clear history'}
+            </button>
+          </div>
+        ) : null}
       </div>
 
       {visibleBookings.length ? (
@@ -2266,7 +2276,7 @@ function StudentBookingsView({ bookings, currentUser, onCancel, onClear, onPay, 
             const status = getCurrentStatus(booking)
             const paid = isPaymentComplete(booking)
             const canCancel = !booking.cancelledAt && !paid && status === 'pending academic'
-            const canClear = (status === 'approved' && paid) || status === 'cancelled' || status === 'not approved'
+            const canClear = canStudentClearBookingHistory(booking)
 
             let action = null
 
@@ -2332,12 +2342,14 @@ function EmergencyPermissionView({
   bookings,
   currentUser,
   onClear,
+  onClearHistory,
   onCreate,
   onDecision,
   onPay,
   title,
   users,
 }) {
+  const [isClearingHistory, setIsClearingHistory] = useState(false)
   const [query, setQuery] = useState('')
   const [form, setForm] = useState(() => createInitialEmergencyForm())
   const availableBeds = getAvailableBeds(allBookings, form.checkIn, form.checkOut, '', form.gender)
@@ -2361,6 +2373,7 @@ function EmergencyPermissionView({
     (booking) => !isHistoryClearedForUser(booking, currentUser),
   )
   const filteredRecords = filterBookings(visibleRecords, users, query)
+  const clearableFilteredRecords = filteredRecords.filter(canWardenClearBookingHistory)
   const pendingPayments = visibleRecords.filter(
     (booking) => getCurrentStatus(booking) === 'approved' && !isPaymentComplete(booking),
   )
@@ -2383,6 +2396,28 @@ function EmergencyPermissionView({
     }
 
     scrollPageToTop('smooth')
+  }
+
+  async function handleClearHistory() {
+    if (!onClearHistory || !clearableFilteredRecords.length) {
+      return
+    }
+
+    const shouldClear = window.confirm(
+      'Clear all currently visible completed emergency history rows from this page?',
+    )
+
+    if (!shouldClear) {
+      return
+    }
+
+    setIsClearingHistory(true)
+
+    try {
+      await onClearHistory(clearableFilteredRecords.map((booking) => booking.id))
+    } finally {
+      setIsClearingHistory(false)
+    }
   }
 
   return (
@@ -2562,15 +2597,29 @@ function EmergencyPermissionView({
             <div className="eyebrow">{currentUser.roleLabel}</div>
             <h2>Emergency Records</h2>
           </div>
-          <label className="search-field">
-            <span>Search</span>
-            <input
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search student details, booking id, or room"
-              type="search"
-              value={query}
-            />
-          </label>
+          <div className="section-heading-actions">
+            <label className="search-field">
+              <span>Search</span>
+              <input
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search student details, booking id, or room"
+                type="search"
+                value={query}
+              />
+            </label>
+            {clearableFilteredRecords.length ? (
+              <div className="button-row">
+                <button
+                  className="ghost-button"
+                  disabled={isClearingHistory}
+                  onClick={handleClearHistory}
+                  type="button"
+                >
+                  {isClearingHistory ? 'Clearing...' : 'Clear history'}
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
 
         {filteredRecords.length ? (
@@ -2598,7 +2647,7 @@ function EmergencyPermissionView({
                 )
               }
 
-              if ((status === 'approved' && paid) || status === 'not approved' || status === 'cancelled') {
+              if (canWardenClearBookingHistory(booking)) {
                 action = (
                   <div className="button-row">
                     <button className="ghost-button" onClick={() => onClear(booking.id)} type="button">
@@ -3154,13 +3203,42 @@ function WardenApprovalQueue({
   )
 }
 
-function DecisionListView({ bookings, currentUser, emptyCopy, onClear = null, showQr = false, title, users }) {
+function DecisionListView({
+  bookings,
+  currentUser,
+  emptyCopy,
+  onClear = null,
+  onClearHistory = null,
+  showQr = false,
+  title,
+  users,
+}) {
+  const [isClearingHistory, setIsClearingHistory] = useState(false)
   const [query, setQuery] = useState('')
-  const filtered = filterBookings(
-    bookings.filter((booking) => !isHistoryClearedForUser(booking, currentUser)),
-    users,
-    query,
-  )
+  const visibleBookings = bookings.filter((booking) => !isHistoryClearedForUser(booking, currentUser))
+  const filtered = filterBookings(visibleBookings, users, query)
+
+  async function handleClearHistory() {
+    if (!onClearHistory || !filtered.length) {
+      return
+    }
+
+    const shouldClear = window.confirm(
+      'Clear all currently visible history rows from this page?',
+    )
+
+    if (!shouldClear) {
+      return
+    }
+
+    setIsClearingHistory(true)
+
+    try {
+      await onClearHistory(filtered.map((booking) => booking.id))
+    } finally {
+      setIsClearingHistory(false)
+    }
+  }
 
   return (
     <section className="panel-card">
@@ -3169,15 +3247,29 @@ function DecisionListView({ bookings, currentUser, emptyCopy, onClear = null, sh
           <div className="eyebrow">{currentUser.roleLabel}</div>
           <h2>{title}</h2>
         </div>
-        <label className="search-field">
-          <span>Search</span>
-          <input
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search student details, booking id, or room"
-            type="search"
-            value={query}
-          />
-        </label>
+        <div className="section-heading-actions">
+          <label className="search-field">
+            <span>Search</span>
+            <input
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search student details, booking id, or room"
+              type="search"
+              value={query}
+            />
+          </label>
+          {onClearHistory && filtered.length ? (
+            <div className="button-row">
+              <button
+                className="ghost-button"
+                disabled={isClearingHistory}
+                onClick={handleClearHistory}
+                type="button"
+              >
+                {isClearingHistory ? 'Clearing...' : 'Clear history'}
+              </button>
+            </div>
+          ) : null}
+        </div>
       </div>
 
       {filtered.length ? (
@@ -4211,6 +4303,16 @@ function isHistoryClearedForUser(booking, currentUser) {
   }
 
   return false
+}
+
+function canStudentClearBookingHistory(booking) {
+  const status = getCurrentStatus(booking)
+  return (status === 'approved' && isPaymentComplete(booking)) || status === 'cancelled' || status === 'not approved'
+}
+
+function canWardenClearBookingHistory(booking) {
+  const status = getCurrentStatus(booking)
+  return (status === 'approved' && isPaymentComplete(booking)) || status === 'cancelled' || status === 'not approved'
 }
 
 function canWardenUserReviewBooking(user, booking) {

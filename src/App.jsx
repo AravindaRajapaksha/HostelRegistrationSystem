@@ -42,6 +42,15 @@ const STORAGE_KEY = 'hostel-system-demo-state-v1'
 const SESSION_KEY = 'hostel-system-demo-session-v1'
 const TRF_RULES_PDF = encodeURI('/TRF - Rules and Regulations.pdf')
 const DEFAULT_IOT_LOG_URL = String(import.meta.env.VITE_IOT_LOG_URL ?? '').trim()
+const REMOTE_SYNC_INTERVAL_MS = 10000
+
+function getInitialFeedback(usingSupabase) {
+  if (usingSupabase) {
+    return 'Connecting to live Supabase data for shared bookings and approvals.'
+  }
+
+  return 'Supabase is not configured for this deployment, so bookings stay only in this browser. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Vercel to share data between browsers.'
+}
 
 function scrollPageToTop(behavior = 'smooth') {
   window.scrollTo({
@@ -56,9 +65,7 @@ function App() {
   const [appState, setAppState] = useState(loadState)
   const [session, setSession] = useState(null)
   const [activeView, setActiveView] = useState('home')
-  const [feedback, setFeedback] = useState(
-    'Use one of the demo accounts below to explore the TRF hostel workflow.',
-  )
+  const [feedback, setFeedback] = useState(() => getInitialFeedback(usingSupabase))
 
   const currentUser = appState.users.find((user) => user.username === session?.username) ?? null
 
@@ -88,7 +95,7 @@ function App() {
         }
 
         setAppState(remoteState)
-        setFeedback('Live Supabase data loaded. Seeded portal accounts are ready to use.')
+        setFeedback('Live Supabase data loaded. Shared bookings and approvals are now available across browsers.')
       } catch (error) {
         if (isCancelled) {
           return
@@ -112,10 +119,11 @@ function App() {
       return
     }
 
+    let isCancelled = false
     let syncInProgress = false
 
-    async function syncFromSupabaseOnFocus() {
-      if (document.visibilityState === 'hidden' || syncInProgress) {
+    async function syncFromSupabase() {
+      if (isCancelled || document.visibilityState === 'hidden' || syncInProgress) {
         return
       }
 
@@ -123,7 +131,9 @@ function App() {
 
       try {
         const remoteState = await fetchRemoteState()
-        setAppState(remoteState)
+        if (!isCancelled) {
+          setAppState(remoteState)
+        }
       } catch {
         // Keep the existing in-memory state if the live refresh is temporarily unavailable.
       } finally {
@@ -131,12 +141,16 @@ function App() {
       }
     }
 
-    window.addEventListener('focus', syncFromSupabaseOnFocus)
-    document.addEventListener('visibilitychange', syncFromSupabaseOnFocus)
+    const intervalId = window.setInterval(syncFromSupabase, REMOTE_SYNC_INTERVAL_MS)
+
+    window.addEventListener('focus', syncFromSupabase)
+    document.addEventListener('visibilitychange', syncFromSupabase)
 
     return () => {
-      window.removeEventListener('focus', syncFromSupabaseOnFocus)
-      document.removeEventListener('visibilitychange', syncFromSupabaseOnFocus)
+      isCancelled = true
+      window.clearInterval(intervalId)
+      window.removeEventListener('focus', syncFromSupabase)
+      document.removeEventListener('visibilitychange', syncFromSupabase)
     }
   }, [fetchRemoteState, usingSupabase])
 
@@ -1620,7 +1634,7 @@ function renderView({
   return <HomeView currentUser={currentUser} users={appState.users} />
 }
 
-function LoginScreen({ users, onLogin }) {
+function LoginScreen({ feedback, users, onLogin }) {
   const [credentials, setCredentials] = useState({
     username: 's23000427',
     password: 's23000427',
@@ -1639,6 +1653,7 @@ function LoginScreen({ users, onLogin }) {
           <div className="eyebrow">Hostel Booking Login</div>
           <h1>Temporary Residential Facility (TRF)</h1>
         </div>
+        {feedback ? <div className="status-banner">{feedback}</div> : null}
         <form
           className="login-card"
           onSubmit={(event) => {
